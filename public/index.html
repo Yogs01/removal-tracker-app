@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Removal Shipment Tracker</title>
+<style>
+:root{
+  --bg:#f8f9fb;--white:#fff;--border:#e8eaed;--text:#111827;--muted:#6b7280;
+  --light:#f3f4f6;--accent:#4f46e5;--green:#16a34a;--yellow:#ca8a04;
+  --orange:#ea580c;--red:#dc2626;--red-bg:#fef2f2;--red-border:#fecaca;
+  --radius:10px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;font-size:14px}
+nav{background:var(--white);border-bottom:1px solid var(--border);height:52px;display:flex;align-items:center;padding:0 28px;gap:0;position:sticky;top:0;z-index:100}
+.nav-logo{font-size:15px;font-weight:700;margin-right:32px}
+.nav-links{display:flex;gap:2px;flex:1}
+.nav-link{color:var(--muted);font-size:13px;font-weight:500;padding:6px 14px;border-radius:7px;cursor:pointer;border:none;background:none;transition:all .15s}
+.nav-link:hover{background:var(--light);color:var(--text)}
+.nav-link.active{background:var(--accent);color:#fff}
+.nav-right{display:flex;align-items:center;gap:10px}
+.btn{display:inline-flex;align-items:center;gap:5px;border:none;border-radius:7px;padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;transition:opacity .15s}
+.btn:hover{opacity:.85}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-danger{background:var(--red-bg);color:var(--red);border:1px solid var(--red-border)}
+.btn-sm{padding:4px 10px;font-size:12px}
+.btn-outline{background:var(--white);color:var(--text);border:1px solid var(--border)}
+.page{max-width:1300px;margin:0 auto;padding:24px}
+
+/* metrics */
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px}
+.metric{background:var(--white);border:1px solid var(--border);border-radius:var(--radius);padding:16px 14px}
+.metric-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:8px}
+.metric-val{font-size:26px;font-weight:800;line-height:1}
+.metric-sub{font-size:11px;color:var(--muted);margin-top:5px}
+.m-green .metric-val{color:var(--green)}
+.m-blue .metric-val{color:var(--accent)}
+.m-orange .metric-val{color:var(--orange)}
+.m-purple .metric-val{color:#7c3aed}
+
+/* table card */
+.table-card{background:var(--white);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:20px}
+.table-topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border);flex-wrap:wrap;gap:10px}
+.table-topbar h3{font-size:14px;font-weight:700}
+.table-meta{font-size:12px;color:var(--muted)}
+.tbl-scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{padding:9px 14px;text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);background:var(--light);border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:10px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:var(--bg)}
+.mono{font-family:monospace;font-size:11px;color:var(--muted)}
+
+/* badges */
+.badge{display:inline-block;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700}
+.badge-green{background:#dcfce7;color:#15803d}
+.badge-red{background:#fee2e2;color:var(--red)}
+.badge-blue{background:#ede9fe;color:#5b21b6}
+.badge-gray{background:var(--light);color:var(--muted)}
+.badge-orange{background:#ffedd5;color:#c2410c}
+.badge-yellow{background:#fef9c3;color:#a16207}
+
+/* filters */
+.filter-bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:12px 18px;border-bottom:1px solid var(--border);background:var(--bg)}
+.filter-bar input,.filter-bar select{border:1px solid var(--border);border-radius:7px;padding:7px 11px;font-size:13px;background:var(--white);color:var(--text);outline:none}
+.filter-bar input:focus,.filter-bar select:focus{border-color:var(--accent)}
+.filter-bar input{min-width:220px}
+
+/* pager */
+.pager{display:flex;align-items:center;gap:8px;padding:12px 18px;border-top:1px solid var(--border)}
+.pager button{background:var(--white);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 14px;font-size:13px;cursor:pointer}
+.pager button:disabled{opacity:.4;cursor:not-allowed}
+.pager button:not(:disabled):hover{border-color:var(--accent);color:var(--accent)}
+.pager-info{flex:1;text-align:center;font-size:12px;color:var(--muted)}
+
+/* carrier chip */
+.carrier{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;padding:3px 8px;border-radius:5px}
+.carrier-ups{background:#f0f7ff;color:#0369a1}
+.carrier-usps{background:#f0fdf4;color:#166534}
+.carrier-amazon{background:#fff7ed;color:#c2410c}
+.carrier-other{background:var(--light);color:var(--muted)}
+
+/* tracking link */
+.track-link{color:var(--accent);text-decoration:none;font-family:monospace;font-size:11px;font-weight:600}
+.track-link:hover{text-decoration:underline}
+
+/* status select inline */
+.status-sel{border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px;background:var(--white);cursor:pointer}
+
+/* detail drawer */
+.detail-row td{background:#f9fafb!important;padding:0}
+.detail-inner{padding:16px 18px}
+.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:700px){.detail-grid{grid-template-columns:1fr}}
+.detail-section h4{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:10px}
+.pkg-row{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--border)}
+.pkg-row:last-child{border-bottom:none}
+.dest-input{border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:13px;width:100%;margin-bottom:8px;outline:none}
+.dest-input:focus{border-color:var(--accent)}
+.notes-input{border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:13px;width:100%;height:60px;resize:vertical;outline:none}
+.notes-input:focus{border-color:var(--accent)}
+
+/* 2 col charts */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
+@media(max-width:860px){.grid2{grid-template-columns:1fr}}
+.chart-card{background:var(--white);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px}
+.chart-title{font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:14px}
+.bar-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.bar-label{font-size:13px;min-width:80px;font-weight:500}
+.bar-track{flex:1;height:20px;background:var(--border);border-radius:4px;overflow:hidden}
+.bar-fill{height:100%;border-radius:4px}
+.bar-val{font-size:12px;color:var(--muted);min-width:60px;text-align:right}
+
+/* upload */
+.upload-zone{background:var(--white);border:2px dashed var(--border);border-radius:var(--radius);padding:40px 28px;text-align:center;cursor:pointer;transition:all .2s;margin-bottom:20px}
+.upload-zone:hover,.upload-zone.drag{border-color:var(--accent);background:#f5f3ff}
+.upload-zone h3{font-size:16px;font-weight:700;margin-bottom:6px}
+.upload-zone p{font-size:13px;color:var(--muted);margin-bottom:18px;line-height:1.6}
+.upload-cta{background:var(--accent);color:#fff;border-radius:7px;padding:10px 24px;font-size:14px;font-weight:700;display:inline-block}
+.progress-wrap{background:var(--border);border-radius:99px;height:5px;margin-top:16px;display:none}
+.progress-bar{background:var(--accent);height:100%;border-radius:99px;width:0%;transition:width .3s}
+#uploadStatus{margin-top:10px;font-size:13px;color:var(--muted)}
+#fileInput{display:none}
+
+/* spinner */
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.empty-state{text-align:center;padding:48px;color:var(--muted)}
+.empty-state h3{font-size:16px;font-weight:700;color:var(--text);margin-bottom:8px}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-logo">🚚 Removal Tracker</div>
+  <div class="nav-links">
+    <button class="nav-link active" onclick="showTab('overview',this)">Overview</button>
+    <button class="nav-link" onclick="showTab('orders',this)">By Order</button>
+    <button class="nav-link" onclick="showTab('tracking',this)">By Tracking #</button>
+    <button class="nav-link" onclick="showTab('upload',this)">Upload</button>
+  </div>
+  <div class="nav-right">
+    <button class="btn btn-danger" onclick="resetData()">Clear All</button>
+  </div>
+</nav>
+
+<div class="page">
+
+<!-- ══ OVERVIEW ══════════════════════════════════════════════════════════════ -->
+<div id="tab-overview">
+  <div class="metrics" id="metricsWrap">
+    <div class="metric"><div class="metric-label">Loading</div><div class="metric-val">—</div></div>
+  </div>
+  <div class="grid2" id="chartsGrid" style="display:none">
+    <div class="chart-card">
+      <div class="chart-title">Packages by Carrier</div>
+      <div id="carrierBars"></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">Units by Disposition</div>
+      <div id="dispositionBars"></div>
+    </div>
+  </div>
+  <div class="table-card" id="recentCard" style="display:none">
+    <div class="table-topbar"><h3>Recent Removal Orders</h3></div>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>Order ID</th><th>Requested</th><th>Last Shipped</th><th>Packages</th><th>Units</th><th>Destination</th><th>Status</th></tr></thead>
+        <tbody id="recentBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ══ BY ORDER ═══════════════════════════════════════════════════════════════ -->
+<div id="tab-orders" style="display:none">
+  <div class="table-card">
+    <div class="table-topbar">
+      <h3>Removal Orders</h3>
+      <div class="table-meta" id="ordersMeta">—</div>
+    </div>
+    <div class="filter-bar">
+      <input type="text" id="ordersSearch" placeholder="Search order ID, destination, tracking…" oninput="debounce(()=>loadOrders(1),350)"/>
+      <select id="statusFilter" onchange="loadOrders(1)">
+        <option value="">All Statuses</option>
+        <option>In Transit</option>
+        <option>Delivered</option>
+        <option>Received at 3PL</option>
+        <option>Received at Warehouse</option>
+        <option>Other</option>
+      </select>
+    </div>
+    <div id="ordersTableWrap">
+      <table><tbody><tr><td colspan="9" style="text-align:center;padding:32px"><span class="spinner"></span>Loading…</td></tr></tbody></table>
+    </div>
+    <div class="pager" id="ordersPager" style="display:none">
+      <button id="ordersPrev" onclick="changeOrdersPage(-1)">← Prev</button>
+      <div class="pager-info" id="ordersPagerInfo">—</div>
+      <button id="ordersNext" onclick="changeOrdersPage(1)">Next →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ BY TRACKING ════════════════════════════════════════════════════════════ -->
+<div id="tab-tracking" style="display:none">
+  <div class="table-card">
+    <div class="table-topbar">
+      <h3>Tracking Numbers</h3>
+      <div class="table-meta" id="trackingMeta">—</div>
+    </div>
+    <div class="filter-bar">
+      <input type="text" id="trackingSearch" placeholder="Search tracking number or order ID…" oninput="debounce(()=>loadTracking(1),350)"/>
+      <select id="carrierFilter" onchange="loadTracking(1)">
+        <option value="">All Carriers</option>
+        <option value="UPS">UPS</option>
+        <option value="USPS">USPS</option>
+        <option value="Amazon">Amazon Logistics</option>
+      </select>
+    </div>
+    <div id="trackingTableWrap">
+      <table><tbody><tr><td colspan="7" style="text-align:center;padding:32px"><span class="spinner"></span>Loading…</td></tr></tbody></table>
+    </div>
+    <div class="pager" id="trackingPager" style="display:none">
+      <button id="trackingPrev" onclick="changeTrackingPage(-1)">← Prev</button>
+      <div class="pager-info" id="trackingPagerInfo">—</div>
+      <button id="trackingNext" onclick="changeTrackingPage(1)">Next →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ UPLOAD ══════════════════════════════════════════════════════════════════ -->
+<div id="tab-upload" style="display:none">
+  <div class="upload-zone" id="uploadZone"
+       onclick="document.getElementById('fileInput').click()"
+       ondragover="event.preventDefault();this.classList.add('drag')"
+       ondragleave="this.classList.remove('drag')"
+       ondrop="handleDrop(event)">
+    <input type="file" id="fileInput" accept=".csv,.txt,.tsv,.xlsx" onchange="uploadFile(this.files[0])"/>
+    <h3>Upload Removal Shipment Detail Report</h3>
+    <p>Drag & drop or click to browse<br/>
+       Download from: <strong>Amazon Seller Central → Reports → Fulfillment → Removals → Removal Shipment Detail</strong><br/>
+       Re-uploading the same file skips already-imported rows automatically.</p>
+    <div class="upload-cta">Choose File</div>
+    <div class="progress-wrap" id="progressWrap"><div class="progress-bar" id="progressBar"></div></div>
+    <div id="uploadStatus"></div>
+  </div>
+  <div class="table-card" id="uploadHistCard" style="display:none">
+    <div class="table-topbar"><h3>Upload History</h3></div>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>File</th><th>Rows Added</th><th>Skipped</th><th>Uploaded At</th></tr></thead>
+        <tbody id="uploadHistBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+</div><!-- .page -->
+
+<!-- ══ ORDER DETAIL MODAL ════════════════════════════════════════════════════ -->
+<div id="detailModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:200;overflow:auto">
+  <div style="background:var(--white);border-radius:12px;max-width:860px;margin:40px auto;padding:28px;position:relative">
+    <button onclick="closeModal()" style="position:absolute;top:16px;right:16px;background:none;border:none;font-size:22px;cursor:pointer;color:var(--muted)">✕</button>
+    <div id="modalContent"></div>
+  </div>
+</div>
+
+<script>
+let ordersPage = 1, trackingPage = 1;
+let debTimer;
+function debounce(fn, ms) { clearTimeout(debTimer); debTimer = setTimeout(fn, ms); }
+
+// ── TABS ──────────────────────────────────────────────────────────────────────
+function showTab(name, el) {
+  document.querySelectorAll('[id^="tab-"]').forEach(t => t.style.display = 'none');
+  document.getElementById('tab-' + name).style.display = 'block';
+  document.querySelectorAll('.nav-link').forEach(a => a.classList.remove('active'));
+  el.classList.add('active');
+  if (name === 'orders')   loadOrders(1);
+  if (name === 'tracking') loadTracking(1);
+  if (name === 'upload')   loadUploadHistory();
+}
+
+// ── UPLOAD ────────────────────────────────────────────────────────────────────
+function handleDrop(e) {
+  e.preventDefault();
+  document.getElementById('uploadZone').classList.remove('drag');
+  if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
+}
+async function uploadFile(file) {
+  if (!file) return;
+  const status = document.getElementById('uploadStatus');
+  const pWrap  = document.getElementById('progressWrap');
+  const pBar   = document.getElementById('progressBar');
+  status.textContent = `Uploading ${file.name}…`;
+  pWrap.style.display = 'block'; pBar.style.width = '10%';
+  const fd = new FormData(); fd.append('file', file);
+  try {
+    const r = await fetch('/api/upload', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!d.jobId) { status.textContent = 'Error: ' + (d.error || 'unknown'); return; }
+    const iv = setInterval(async () => {
+      const j = await fetch(`/api/job/${d.jobId}`).then(r=>r.json());
+      pBar.style.width = (j.progress || 10) + '%';
+      if (j.status === 'done') {
+        clearInterval(iv); pBar.style.width = '100%';
+        status.textContent = `✅ Done! ${(j.added||0).toLocaleString()} rows added, ${j.skipped||0} already existed`;
+        loadStats(); loadUploadHistory();
+      } else if (j.status === 'error') {
+        clearInterval(iv); status.textContent = '❌ ' + j.error;
+      }
+    }, 1000);
+  } catch(e) { status.textContent = 'Upload failed: ' + e.message; }
+}
+async function loadUploadHistory() {
+  try {
+    const logs = await fetch('/api/uploads').then(r=>r.json());
+    const card = document.getElementById('uploadHistCard');
+    if (!logs.length) { card.style.display='none'; return; }
+    card.style.display = 'block';
+    document.getElementById('uploadHistBody').innerHTML = logs.map(u =>
+      `<tr><td style="font-weight:500">${esc(u.filename)}</td><td style="text-align:right">${(u.rows_added||0).toLocaleString()}</td><td style="text-align:right;color:var(--muted)">${(u.rows_skipped||0).toLocaleString()}</td><td style="color:var(--muted)">${u.uploaded_at}</td></tr>`
+    ).join('');
+  } catch(_) {}
+}
+
+// ── OVERVIEW ──────────────────────────────────────────────────────────────────
+async function loadStats() {
+  try {
+    const d = await fetch('/api/stats').then(r=>r.json());
+    const t = d.totals || {};
+    if (!t.total_orders) { renderEmpty(); return; }
+
+    document.getElementById('metricsWrap').innerHTML = `
+      <div class="metric m-blue"><div class="metric-label">Removal Orders</div><div class="metric-val">${fmt(t.total_orders)}</div><div class="metric-sub">unique orders</div></div>
+      <div class="metric m-purple"><div class="metric-label">Total Packages</div><div class="metric-val">${fmt(t.total_packages)}</div><div class="metric-sub">tracking numbers</div></div>
+      <div class="metric m-orange"><div class="metric-label">Total Units</div><div class="metric-val">${fmt(t.total_units)}</div><div class="metric-sub">units shipped out</div></div>
+      <div class="metric m-green"><div class="metric-label">Unique SKUs</div><div class="metric-val">${fmt(t.total_skus)}</div><div class="metric-sub">products removed</div></div>
+    `;
+
+    // Carrier bars
+    const maxPkg = Math.max(...(d.byCarrier||[]).map(c=>c.packages), 1);
+    const CARRIER_COLORS = { UPS:'#0369a1', USPS:'#166534', Amazon:'#c2410c', FedEx:'#7c3aed' };
+    document.getElementById('carrierBars').innerHTML = (d.byCarrier||[]).map(c =>
+      `<div class="bar-row">
+        <div class="bar-label">${esc(c.carrier_name)}</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${(c.packages/maxPkg*100).toFixed(1)}%;background:${CARRIER_COLORS[c.carrier_name]||'#6366f1'}"></div></div>
+        <div class="bar-val">${fmt(c.packages)} pkg · ${fmt(c.units)} units</div>
+      </div>`
+    ).join('');
+
+    // Disposition bars
+    const maxUnits = Math.max(...(d.byDisposition||[]).map(x=>x.units), 1);
+    const DISP_COLORS = { Sellable:'#16a34a', Unsellable:'#dc2626' };
+    document.getElementById('dispositionBars').innerHTML = (d.byDisposition||[]).map(x =>
+      `<div class="bar-row">
+        <div class="bar-label">${esc(x.disposition)}</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${(x.units/maxUnits*100).toFixed(1)}%;background:${DISP_COLORS[x.disposition]||'#6366f1'}"></div></div>
+        <div class="bar-val">${fmt(x.units)} units</div>
+      </div>`
+    ).join('');
+
+    document.getElementById('chartsGrid').style.display = 'grid';
+
+    // Recent orders
+    if (d.recentOrders?.length) {
+      document.getElementById('recentCard').style.display = 'block';
+      document.getElementById('recentBody').innerHTML = d.recentOrders.map(o =>
+        `<tr>
+          <td><button class="track-link" style="background:none;border:none;cursor:pointer;font-family:monospace;font-size:11px;font-weight:600;color:var(--accent)" onclick="openOrderModal('${esc(o.order_id)}')">${esc(o.order_id)}</button></td>
+          <td>${fmtDate(o.request_date)}</td>
+          <td>${fmtDate(o.last_shipment)}</td>
+          <td>${fmt(o.packages)}</td>
+          <td>${fmt(o.units)}</td>
+          <td>${o.destination ? `<span style="font-weight:500">${esc(o.destination)}</span>` : '<span style="color:var(--muted)">—</span>'}</td>
+          <td>${statusBadge(o.status)}</td>
+        </tr>`
+      ).join('');
+    }
+  } catch(e) { console.error(e); }
+}
+
+function renderEmpty() {
+  document.getElementById('metricsWrap').innerHTML = `<div style="grid-column:1/-1" class="empty-state"><h3>No shipment data</h3><p>Go to the Upload tab and upload your Amazon Removal Shipment Detail report.</p></div>`;
+}
+
+// ── ORDERS TABLE ──────────────────────────────────────────────────────────────
+async function loadOrders(page) {
+  ordersPage = page || ordersPage;
+  const search = document.getElementById('ordersSearch')?.value || '';
+  const status = document.getElementById('statusFilter')?.value || '';
+  const qs = new URLSearchParams({ page: ordersPage, search, status });
+  document.getElementById('ordersTableWrap').innerHTML =
+    `<table><tbody><tr><td colspan="9" style="text-align:center;padding:32px"><span class="spinner"></span>Loading…</td></tr></tbody></table>`;
+  try {
+    const d = await fetch(`/api/orders?${qs}`).then(r=>r.json());
+    document.getElementById('ordersMeta').textContent = `${fmt(d.total)} orders`;
+    if (!d.orders?.length) {
+      document.getElementById('ordersTableWrap').innerHTML = `<div class="empty-state"><h3>No orders found</h3></div>`;
+      document.getElementById('ordersPager').style.display = 'none'; return;
+    }
+    document.getElementById('ordersTableWrap').innerHTML = `
+      <table>
+        <thead><tr>
+          <th>Order ID</th><th>Requested</th><th>Last Shipped</th>
+          <th>Packages</th><th>Units</th><th>SKUs</th>
+          <th>Carriers</th><th>Destination</th><th>Status</th>
+        </tr></thead>
+        <tbody>${d.orders.map(o => `
+          <tr>
+            <td><button class="track-link" style="background:none;border:none;cursor:pointer;font-family:monospace;font-size:12px;font-weight:700;color:var(--accent)" onclick="openOrderModal('${esc(o.order_id)}')">${esc(o.order_id)}</button></td>
+            <td>${fmtDate(o.request_date)}</td>
+            <td>${fmtDate(o.last_shipment)}</td>
+            <td style="text-align:center"><strong>${fmt(o.packages)}</strong></td>
+            <td style="text-align:center">${fmt(o.units)}</td>
+            <td style="text-align:center">${fmt(o.skus)}</td>
+            <td>${(o.carriers||'').split(',').map(c=>carrierChip(c.trim())).join(' ')}</td>
+            <td>${o.destination ? `<span style="font-weight:500">${esc(o.destination)}</span>` : `<span style="color:var(--muted);font-size:12px">click order to set →</span>`}</td>
+            <td>${statusBadge(o.status)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`;
+    const pg = document.getElementById('ordersPager');
+    pg.style.display = d.pages > 1 ? 'flex' : 'none';
+    document.getElementById('ordersPrev').disabled = d.page <= 1;
+    document.getElementById('ordersNext').disabled = d.page >= d.pages;
+    document.getElementById('ordersPagerInfo').textContent = `Page ${d.page} of ${d.pages} · ${fmt(d.total)} orders`;
+  } catch(e) {}
+}
+function changeOrdersPage(dir) { ordersPage += dir; loadOrders(ordersPage); }
+
+// ── TRACKING TABLE ────────────────────────────────────────────────────────────
+async function loadTracking(page) {
+  trackingPage = page || trackingPage;
+  const search  = document.getElementById('trackingSearch')?.value || '';
+  const carrier = document.getElementById('carrierFilter')?.value || '';
+  const qs = new URLSearchParams({ page: trackingPage, search, carrier });
+  document.getElementById('trackingTableWrap').innerHTML =
+    `<table><tbody><tr><td colspan="7" style="text-align:center;padding:32px"><span class="spinner"></span>Loading…</td></tr></tbody></table>`;
+  try {
+    const d = await fetch(`/api/tracking?${qs}`).then(r=>r.json());
+    document.getElementById('trackingMeta').textContent = `${fmt(d.total)} tracking numbers`;
+    if (!d.rows?.length) {
+      document.getElementById('trackingTableWrap').innerHTML = `<div class="empty-state"><h3>No tracking numbers found</h3></div>`;
+      document.getElementById('trackingPager').style.display = 'none'; return;
+    }
+    document.getElementById('trackingTableWrap').innerHTML = `
+      <table>
+        <thead><tr>
+          <th>Tracking Number</th><th>Carrier</th><th>Order ID</th>
+          <th>Shipped</th><th>Items</th><th>Units</th><th>Disposition</th>
+        </tr></thead>
+        <tbody>${d.rows.map(r => `
+          <tr>
+            <td>
+              <a class="track-link" href="${esc(r.tracking_url)}" target="_blank" title="Track this package">${esc(r.tracking_number)}</a>
+              <span style="margin-left:6px;font-size:10px">🔗</span>
+            </td>
+            <td>${carrierChip(r.carrier_name)}</td>
+            <td><span class="mono">${esc(r.order_id)}</span></td>
+            <td>${fmtDate(r.shipment_date)}</td>
+            <td style="text-align:center">${fmt(r.item_count)}</td>
+            <td style="text-align:center">${fmt(r.units)}</td>
+            <td>${dispositionBadge(r.dispositions)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`;
+    const pg = document.getElementById('trackingPager');
+    pg.style.display = d.pages > 1 ? 'flex' : 'none';
+    document.getElementById('trackingPrev').disabled = d.page <= 1;
+    document.getElementById('trackingNext').disabled = d.page >= d.pages;
+    document.getElementById('trackingPagerInfo').textContent = `Page ${d.page} of ${d.pages} · ${fmt(d.total)} numbers`;
+  } catch(e) {}
+}
+function changeTrackingPage(dir) { trackingPage += dir; loadTracking(trackingPage); }
+
+// ── ORDER DETAIL MODAL ────────────────────────────────────────────────────────
+async function openOrderModal(orderId) {
+  document.getElementById('detailModal').style.display = 'block';
+  document.getElementById('modalContent').innerHTML = `<div style="text-align:center;padding:40px"><span class="spinner"></span> Loading…</div>`;
+  try {
+    const d = await fetch(`/api/order/${encodeURIComponent(orderId)}`).then(r=>r.json());
+    const m = d.meta || {};
+    document.getElementById('modalContent').innerHTML = `
+      <h2 style="font-size:18px;font-weight:800;margin-bottom:4px">Order: <span style="font-family:monospace;color:var(--accent)">${esc(orderId)}</span></h2>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:20px">${d.packages.length} package(s) · ${d.items.length} item(s) shipped</p>
+      <div class="detail-grid">
+        <div>
+          <div class="detail-section">
+            <h4>📦 Packages / Tracking Numbers</h4>
+            ${d.packages.map(p => `
+              <div class="pkg-row">
+                <div style="flex:1">
+                  <a class="track-link" href="${esc(p.tracking_url)}" target="_blank">${esc(p.tracking_number)}</a>
+                  <span style="margin-left:5px">${carrierChip(p.carrier_name)}</span>
+                  <div style="font-size:11px;color:var(--muted);margin-top:3px">${fmtDate(p.shipment_date)} · ${fmt(p.units)} units · ${fmt(p.item_count)} items</div>
+                </div>
+                <a href="${esc(p.tracking_url)}" target="_blank" class="btn btn-outline btn-sm">Track 🔗</a>
+              </div>`).join('')}
+          </div>
+          <div class="detail-section" style="margin-top:18px">
+            <h4>📋 Items in this Order</h4>
+            <div style="max-height:260px;overflow-y:auto">
+              <table style="font-size:12px">
+                <thead><tr><th>SKU / FNSKU</th><th>Disposition</th><th>Qty</th><th>Tracking #</th></tr></thead>
+                <tbody>${d.items.map(i=>`
+                  <tr>
+                    <td><div style="font-weight:500;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(i.sku)}</div><div class="mono">${esc(i.fnsku)}</div></td>
+                    <td>${dispositionBadge(i.disposition)}</td>
+                    <td>${i.shipped_quantity}</td>
+                    <td><span class="mono">${esc(i.tracking_number)}</span></td>
+                  </tr>`).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="detail-section">
+            <h4>✏️ Destination & Status</h4>
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Destination (3PL name, address, etc.)</label>
+            <input class="dest-input" id="modalDest" value="${esc(m.destination||'')}" placeholder="e.g. 3PL - Los Angeles, Home, Office…"/>
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px;margin-top:10px">Status</label>
+            <select class="status-sel" id="modalStatus" style="width:100%;margin-bottom:10px">
+              <option ${(m.status||'In Transit')==='In Transit'?'selected':''}>In Transit</option>
+              <option ${m.status==='Delivered'?'selected':''}>Delivered</option>
+              <option ${m.status==='Received at 3PL'?'selected':''}>Received at 3PL</option>
+              <option ${m.status==='Received at Warehouse'?'selected':''}>Received at Warehouse</option>
+              <option ${m.status==='Other'?'selected':''}>Other</option>
+            </select>
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Notes</label>
+            <textarea class="notes-input" id="modalNotes" placeholder="Any notes…">${esc(m.notes||'')}</textarea>
+            <button class="btn btn-primary" style="margin-top:10px;width:100%" onclick="saveOrderMeta('${esc(orderId)}')">Save Changes</button>
+            <div id="saveMsg" style="font-size:12px;color:var(--green);margin-top:6px;text-align:center"></div>
+          </div>
+        </div>
+      </div>`;
+  } catch(e) {
+    document.getElementById('modalContent').innerHTML = `<p style="color:var(--red)">Error loading order details.</p>`;
+  }
+}
+
+async function saveOrderMeta(orderId) {
+  const destination = document.getElementById('modalDest')?.value || '';
+  const status      = document.getElementById('modalStatus')?.value || 'In Transit';
+  const notes       = document.getElementById('modalNotes')?.value || '';
+  try {
+    await fetch(`/api/order/${encodeURIComponent(orderId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ destination, status, notes })
+    });
+    document.getElementById('saveMsg').textContent = '✅ Saved!';
+    loadOrders(ordersPage);
+    setTimeout(() => { if (document.getElementById('saveMsg')) document.getElementById('saveMsg').textContent = ''; }, 2000);
+  } catch(e) {
+    document.getElementById('saveMsg').textContent = '❌ Save failed';
+    document.getElementById('saveMsg').style.color = 'var(--red)';
+  }
+}
+
+function closeModal() {
+  document.getElementById('detailModal').style.display = 'none';
+}
+document.getElementById('detailModal').addEventListener('click', e => {
+  if (e.target === document.getElementById('detailModal')) closeModal();
+});
+
+// ── RESET ─────────────────────────────────────────────────────────────────────
+async function resetData() {
+  if (!confirm('Clear ALL shipment data? This cannot be undone.')) return;
+  await fetch('/api/reset', { method: 'DELETE' });
+  location.reload();
+}
+
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+const fmt = n => (n||0).toLocaleString();
+const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+function fmtDate(s) {
+  if (!s) return '—';
+  return new Date(s+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+}
+function statusBadge(s) {
+  if (!s || s === 'In Transit')            return `<span class="badge badge-yellow">${s||'In Transit'}</span>`;
+  if (s === 'Delivered')                   return `<span class="badge badge-blue">Delivered</span>`;
+  if (s.startsWith('Received'))            return `<span class="badge badge-green">${s}</span>`;
+  return `<span class="badge badge-gray">${esc(s)}</span>`;
+}
+function dispositionBadge(d) {
+  const s = (d||'').toLowerCase();
+  if (s.includes('sellable') && !s.includes('un')) return `<span class="badge badge-green">Sellable</span>`;
+  if (s.includes('unsellable')) return `<span class="badge badge-red">Unsellable</span>`;
+  return `<span class="badge badge-gray">${esc(d||'—')}</span>`;
+}
+function carrierChip(c) {
+  if (c === 'UPS')    return `<span class="carrier carrier-ups">📦 UPS</span>`;
+  if (c === 'USPS')   return `<span class="carrier carrier-usps">📬 USPS</span>`;
+  if (c === 'Amazon') return `<span class="carrier carrier-amazon">📦 Amazon</span>`;
+  if (c === 'FedEx')  return `<span class="carrier carrier-ups">📦 FedEx</span>`;
+  return `<span class="carrier carrier-other">${esc(c||'—')}</span>`;
+}
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+loadStats();
+</script>
+</body>
+</html>
