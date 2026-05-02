@@ -69,6 +69,8 @@ function normalizeCarrier(carrier, tracking) {
   if (c.includes('USPS'))   return 'USPS';
   if (c.includes('AMZL') || c.includes('AMAZON')) return 'Amazon';
   if (c.includes('FEDEX'))  return 'FedEx';
+  // Amazon carrier codes
+  if (c.includes('EXLA') || c.includes('ABNT') || c.includes('AMZL')) return 'Amazon';
   return carrier || 'Unknown';
 }
 
@@ -192,12 +194,15 @@ app.get('/api/stats', (req, res) => {
   const byCarrier = db.prepare(`
     SELECT
       CASE
-        WHEN tracking_number LIKE 'TBA%' THEN 'Amazon'
-        WHEN tracking_number LIKE '1Z%'  THEN 'UPS'
+        WHEN tracking_number LIKE 'TBA%'            THEN 'Amazon'
+        WHEN tracking_number LIKE '1Z%'             THEN 'UPS'
         WHEN tracking_number GLOB '9[0-9][0-9][0-9]*' THEN 'USPS'
-        WHEN carrier LIKE '%UPS%'   THEN 'UPS'
-        WHEN carrier LIKE '%USPS%'  THEN 'USPS'
-        WHEN carrier LIKE '%AMZL%'  THEN 'Amazon'
+        WHEN carrier LIKE '%UPS%'                   THEN 'UPS'
+        WHEN carrier LIKE '%USPS%'                  THEN 'USPS'
+        WHEN carrier LIKE '%AMZL%'                  THEN 'Amazon'
+        WHEN carrier LIKE '%EXLA%'                  THEN 'Amazon'
+        WHEN carrier LIKE '%ABNT%'                  THEN 'Amazon'
+        WHEN carrier LIKE '%FEDEX%'                 THEN 'FedEx'
         ELSE carrier
       END as carrier_name,
       COUNT(DISTINCT tracking_number) as packages,
