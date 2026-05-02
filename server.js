@@ -443,40 +443,46 @@ app.get('/api/addresses', (req, res) => {
     params.push(`%${search}%`, `%${search}%`);
   }
 
+  // Query removal_orders only (no JOIN) to avoid row multiplication on SUM
   const rows = db.prepare(`
     SELECT
       o.shipping_address,
-      COUNT(DISTINCT o.order_id)        as order_count,
-      COALESCE(SUM(o.addr_shipped_qty), 0) as total_units,
-      COALESCE(SUM(o.addr_requested_qty),0) as total_requested,
-      COUNT(DISTINCT s.tracking_number) as package_count,
-      MIN(s.request_date)               as earliest,
-      MAX(s.shipment_date)              as latest_shipment
+      COUNT(o.order_id)                    as order_count,
+      COALESCE(SUM(o.addr_shipped_qty),  0) as total_units,
+      COALESCE(SUM(o.addr_requested_qty),0) as total_requested
     FROM removal_orders o
-    LEFT JOIN removal_shipments s ON s.order_id = o.order_id
     ${where}
     GROUP BY o.shipping_address
     ORDER BY total_units DESC
   `).all(...params);
 
-  // For each address, also get the per-order breakdown
-  const result = rows.map(r => {
-    const orders = db.prepare(`
-      SELECT o.order_id,
-        o.addr_shipped_qty   as units,
-        o.addr_requested_qty as requested,
-        o.order_status,
-        o.status,
-        COUNT(DISTINCT s.tracking_number) as packages,
-        MIN(s.request_date) as request_date
-      FROM removal_orders o
-      LEFT JOIN removal_shipments s ON s.order_id = o.order_id
-      WHERE o.shipping_address = ? AND o.order_id != ''
-      GROUP BY o.order_id
-      ORDER BY request_date DESC
-    `).all(r.shipping_address);
-    return { ...r, orders };
-  });
+  // For each address, get package count + per-order breakdown separately
+  const pkgStmt = db.prepare(`
+    SELECT COUNT(DISTINCT s.tracking_number) as n
+    FROM removal_shipments s
+    JOIN removal_orders o ON s.order_id = o.order_id
+    WHERE o.shipping_address = ?
+  `);
+
+  const ordersStmt = db.prepare(`
+    SELECT o.order_id,
+      o.addr_shipped_qty   as units,
+      o.addr_requested_qty as requested,
+      o.order_status,
+      o.status,
+      o.updated_at         as request_date,
+      (SELECT COUNT(DISTINCT tracking_number)
+       FROM removal_shipments WHERE order_id = o.order_id) as packages
+    FROM removal_orders o
+    WHERE o.shipping_address = ? AND o.order_id != ''
+    ORDER BY o.updated_at DESC
+  `);
+
+  const result = rows.map(r => ({
+    ...r,
+    package_count: pkgStmt.get(r.shipping_address)?.n || 0,
+    orders: ordersStmt.all(r.shipping_address),
+  }));
 
   res.json(result);
 });
