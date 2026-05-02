@@ -371,6 +371,76 @@ app.get('/api/uploads', (req, res) => {
   res.json(logs);
 });
 
+// ─── GET /api/dedup — find & remove duplicate shipment rows ──────────────────
+app.get('/api/dedup', (req, res) => {
+  // Find rows where order_id+sku+tracking_number+shipment_date are identical, keep lowest id
+  const dupes = db.prepare(`
+    SELECT id FROM removal_shipments
+    WHERE id NOT IN (
+      SELECT MIN(id) FROM removal_shipments
+      GROUP BY order_id, sku, tracking_number, shipment_date
+    )
+  `).all();
+
+  const count = dupes.length;
+  if (count > 0) {
+    db.prepare(`
+      DELETE FROM removal_shipments
+      WHERE id NOT IN (
+        SELECT MIN(id) FROM removal_shipments
+        GROUP BY order_id, sku, tracking_number, shipment_date
+      )
+    `).run();
+  }
+
+  const total = db.prepare('SELECT COUNT(*) as n FROM removal_shipments').get().n;
+  res.send(`
+    <html><body style="font-family:sans-serif;padding:32px">
+    <h2>Dedup Complete</h2>
+    <p>Duplicate rows removed: <strong>${count}</strong></p>
+    <p>Rows remaining in DB: <strong>${total.toLocaleString()}</strong></p>
+    <p style="color:green">✅ ${count === 0 ? 'No duplicates found — data is clean.' : `${count} duplicate(s) deleted.`}</p>
+    <a href="/">← Back to app</a>
+    </body></html>
+  `);
+});
+
+// ─── GET /api/diagnostic — row counts and data health check ──────────────────
+app.get('/api/diagnostic', (req, res) => {
+  const total     = db.prepare('SELECT COUNT(*) as n FROM removal_shipments').get().n;
+  const orders    = db.prepare('SELECT COUNT(DISTINCT order_id) as n FROM removal_shipments WHERE order_id != ""').get().n;
+  const tracking  = db.prepare('SELECT COUNT(DISTINCT tracking_number) as n FROM removal_shipments WHERE tracking_number != ""').get().n;
+  const noTracking= db.prepare('SELECT COUNT(*) as n FROM removal_shipments WHERE tracking_number = ""').get().n;
+  const dupeCheck = db.prepare(`
+    SELECT COUNT(*) as n FROM removal_shipments
+    WHERE id NOT IN (
+      SELECT MIN(id) FROM removal_shipments
+      GROUP BY order_id, sku, tracking_number, shipment_date
+    )
+  `).get().n;
+  const dateRange = db.prepare(`
+    SELECT MIN(shipment_date) as earliest, MAX(shipment_date) as latest
+    FROM removal_shipments WHERE shipment_date != ''
+  `).get();
+  const uploads   = db.prepare('SELECT COUNT(*) as n FROM upload_log').get().n;
+
+  res.send(`
+    <html><body style="font-family:sans-serif;padding:32px;max-width:600px">
+    <h2>Database Diagnostic</h2>
+    <table style="border-collapse:collapse;width:100%">
+      <tr style="background:#f3f4f6"><td style="padding:8px 12px;font-weight:600">Total rows</td><td style="padding:8px 12px">${total.toLocaleString()}</td></tr>
+      <tr><td style="padding:8px 12px;font-weight:600">Unique orders</td><td style="padding:8px 12px">${orders.toLocaleString()}</td></tr>
+      <tr style="background:#f3f4f6"><td style="padding:8px 12px;font-weight:600">Unique tracking numbers</td><td style="padding:8px 12px">${tracking.toLocaleString()}</td></tr>
+      <tr><td style="padding:8px 12px;font-weight:600">Rows without tracking</td><td style="padding:8px 12px">${noTracking.toLocaleString()}</td></tr>
+      <tr style="background:#f3f4f6"><td style="padding:8px 12px;font-weight:600">Duplicate rows</td><td style="padding:8px 12px;color:${dupeCheck>0?'red':'green'}">${dupeCheck} ${dupeCheck>0?'⚠️ run /api/dedup to clean':'✅ clean'}</td></tr>
+      <tr><td style="padding:8px 12px;font-weight:600">Shipment date range</td><td style="padding:8px 12px">${dateRange.earliest||'—'} → ${dateRange.latest||'—'}</td></tr>
+      <tr style="background:#f3f4f6"><td style="padding:8px 12px;font-weight:600">Upload files logged</td><td style="padding:8px 12px">${uploads}</td></tr>
+    </table>
+    <br/><a href="/api/dedup">Run Dedup →</a> &nbsp; <a href="/">← Back to app</a>
+    </body></html>
+  `);
+});
+
 // ─── DELETE /api/reset ────────────────────────────────────────────────────────
 app.delete('/api/reset', (req, res) => {
   db.prepare('DELETE FROM removal_shipments').run();
