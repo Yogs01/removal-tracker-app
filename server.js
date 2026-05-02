@@ -365,6 +365,102 @@ app.get('/api/tracking/:tn', (req, res) => {
   res.json({ tracking_number: tn, carrier_name: normalizeCarrier(carrier, tn), tracking_url: trackingUrl(carrier, tn), items });
 });
 
+// ─── POST /api/upload-addresses ──────────────────────────────────────────────
+app.post('/api/upload-addresses', upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  try {
+    const ext = path.extname(req.file.originalname).toLowerCase();
+    let rows;
+    if (ext === '.txt' || ext === '.tsv' || ext === '.csv') {
+      rows = parsePlainText(req.file.path);
+    } else {
+      const wb    = XLSX.readFile(req.file.path, { type: 'file', raw: false });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const raw   = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      rows = raw.map(r => Object.fromEntries(Object.entries(r).map(([k,v]) => [k.trim(), v])));
+    }
+
+    let updated = 0, created = 0;
+    // Build map: order_id → { address, order_type, order_status }
+    const orderMap = {};
+    for (const row of rows) {
+      const orderId = String(row['Order ID'] || row['order-id'] || row['order_id'] || '').trim();
+      if (!orderId) continue;
+      if (orderMap[orderId]) continue; // keep first occurrence
+      const addr   = String(row[' Shipping Address'] || row['Shipping Address'] || row['shipping_address'] || row['shipping-address'] || '').trim()
+                       .replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const oType  = String(row['Order Type'] || row['order-type'] || '').trim();
+      const oStat  = String(row['Order Status'] || row['order-status'] || '').trim();
+      orderMap[orderId] = { addr, oType, oStat };
+    }
+
+    const upsert = db.prepare(`INSERT INTO removal_orders (order_id, shipping_address, order_type, order_status)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(order_id) DO UPDATE SET
+        shipping_address = excluded.shipping_address,
+        order_type       = CASE WHEN excluded.order_type  != '' THEN excluded.order_type  ELSE order_type  END,
+        order_status     = CASE WHEN excluded.order_status != '' THEN excluded.order_status ELSE order_status END,
+        updated_at       = datetime('now')`);
+
+    db.transaction(map => {
+      for (const [orderId, info] of Object.entries(map)) {
+        const existing = db.prepare('SELECT id FROM removal_orders WHERE order_id = ?').get(orderId);
+        upsert.run(orderId, info.addr, info.oType, info.oStat);
+        if (existing) updated++; else created++;
+      }
+    })(orderMap);
+
+    try { fs.unlinkSync(req.file.path); } catch(_) {}
+    res.json({ success: true, updated, created, total: Object.keys(orderMap).length });
+  } catch(e) {
+    try { fs.unlinkSync(req.file.path); } catch(_) {}
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── GET /api/addresses — grouped by shipping address ────────────────────────
+app.get('/api/addresses', (req, res) => {
+  const search = req.query.search || '';
+  let where = `WHERE o.shipping_address != '' AND s.order_id != ''`;
+  const params = [];
+  if (search) {
+    where += ` AND (o.shipping_address LIKE ? OR s.order_id LIKE ?)`;
+    params.push(`%${search}%`, `%${search}%`);
+  }
+
+  const rows = db.prepare(`
+    SELECT
+      o.shipping_address,
+      COUNT(DISTINCT s.order_id)      as order_count,
+      COUNT(DISTINCT s.tracking_number) as package_count,
+      SUM(s.shipped_quantity)         as total_units,
+      MIN(s.request_date)             as earliest,
+      MAX(s.shipment_date)            as latest_shipment
+    FROM removal_shipments s
+    JOIN removal_orders o ON s.order_id = o.order_id
+    ${where}
+    GROUP BY o.shipping_address
+    ORDER BY total_units DESC
+  `).all(...params);
+
+  // For each address, also get the order IDs
+  const result = rows.map(r => {
+    const orders = db.prepare(`
+      SELECT s.order_id, MIN(s.request_date) as request_date,
+        SUM(s.shipped_quantity) as units,
+        COUNT(DISTINCT s.tracking_number) as packages,
+        o.status
+      FROM removal_shipments s
+      JOIN removal_orders o ON s.order_id = o.order_id
+      WHERE o.shipping_address = ? AND s.order_id != ''
+      GROUP BY s.order_id ORDER BY request_date DESC
+    `).all(r.shipping_address);
+    return { ...r, orders };
+  });
+
+  res.json(result);
+});
+
 // ─── GET /api/uploads ─────────────────────────────────────────────────────────
 app.get('/api/uploads', (req, res) => {
   const logs = db.prepare('SELECT * FROM upload_log ORDER BY uploaded_at DESC LIMIT 20').all();
