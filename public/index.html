@@ -445,7 +445,7 @@ async function loadAddresses() {
                     <td>${fmtDate(o.request_date)}</td>
                     <td style="text-align:center"><strong>${fmt(o.units)}</strong></td>
                     <td style="text-align:center">${fmt(o.packages)}</td>
-                    <td>${statusBadge(o.status)}</td>
+                    <td>${o.order_status ? `<span class="badge badge-gray">${esc(o.order_status)}</span>` : statusBadge(o.status)}</td>
                   </tr>`).join('')}
               </tbody>
             </table>

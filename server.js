@@ -382,30 +382,45 @@ app.post('/api/upload-addresses', upload.single('file'), (req, res) => {
 
     let updated = 0, created = 0;
     // Build map: order_id → { address, order_type, order_status }
+    // Aggregate per order_id: sum shipped/requested qty, keep first address
     const orderMap = {};
     for (const row of rows) {
       const orderId = String(row['Order ID'] || row['order-id'] || row['order_id'] || '').trim();
       if (!orderId) continue;
-      if (orderMap[orderId]) continue; // keep first occurrence
-      const addr   = String(row[' Shipping Address'] || row['Shipping Address'] || row['shipping_address'] || row['shipping-address'] || '').trim()
-                       .replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-      const oType  = String(row['Order Type'] || row['order-type'] || '').trim();
-      const oStat  = String(row['Order Status'] || row['order-status'] || '').trim();
-      orderMap[orderId] = { addr, oType, oStat };
+      const addr  = String(row[' Shipping Address'] || row['Shipping Address'] || row['shipping_address'] || row['shipping-address'] || '').trim()
+                      .replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const oType = String(row['Order Type']   || row['order-type']   || '').trim();
+      const oStat = String(row['Order Status'] || row['order-status'] || '').trim();
+      const shipQty = parseInt(row['Shipped Quantity']   || row['shipped-quantity']   || row['Shipped_Quantity']   || 0) || 0;
+      const reqQty  = parseInt(row['Requested Quantity'] || row['requested-quantity'] || row['Requested_Quantity'] || 0) || 0;
+
+      if (!orderMap[orderId]) {
+        orderMap[orderId] = { addr, oType, oStat, shipQty: 0, reqQty: 0 };
+      }
+      // Sum quantities across all SKU rows for this order
+      orderMap[orderId].shipQty += shipQty;
+      orderMap[orderId].reqQty  += reqQty;
+      // Keep first non-empty address/type/status
+      if (!orderMap[orderId].addr  && addr)  orderMap[orderId].addr  = addr;
+      if (!orderMap[orderId].oType && oType) orderMap[orderId].oType = oType;
+      if (!orderMap[orderId].oStat && oStat) orderMap[orderId].oStat = oStat;
     }
 
-    const upsert = db.prepare(`INSERT INTO removal_orders (order_id, shipping_address, order_type, order_status)
-      VALUES (?, ?, ?, ?)
+    const upsert = db.prepare(`INSERT INTO removal_orders
+        (order_id, shipping_address, order_type, order_status, addr_shipped_qty, addr_requested_qty)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(order_id) DO UPDATE SET
-        shipping_address = excluded.shipping_address,
-        order_type       = CASE WHEN excluded.order_type  != '' THEN excluded.order_type  ELSE order_type  END,
-        order_status     = CASE WHEN excluded.order_status != '' THEN excluded.order_status ELSE order_status END,
-        updated_at       = datetime('now')`);
+        shipping_address   = excluded.shipping_address,
+        order_type         = CASE WHEN excluded.order_type  != '' THEN excluded.order_type  ELSE order_type  END,
+        order_status       = CASE WHEN excluded.order_status!= '' THEN excluded.order_status ELSE order_status END,
+        addr_shipped_qty   = excluded.addr_shipped_qty,
+        addr_requested_qty = excluded.addr_requested_qty,
+        updated_at         = datetime('now')`);
 
     db.transaction(map => {
       for (const [orderId, info] of Object.entries(map)) {
         const existing = db.prepare('SELECT id FROM removal_orders WHERE order_id = ?').get(orderId);
-        upsert.run(orderId, info.addr, info.oType, info.oStat);
+        upsert.run(orderId, info.addr, info.oType, info.oStat, info.shipQty, info.reqQty);
         if (existing) updated++; else created++;
       }
     })(orderMap);
@@ -421,39 +436,44 @@ app.post('/api/upload-addresses', upload.single('file'), (req, res) => {
 // ─── GET /api/addresses — grouped by shipping address ────────────────────────
 app.get('/api/addresses', (req, res) => {
   const search = req.query.search || '';
-  let where = `WHERE o.shipping_address != '' AND s.order_id != ''`;
+  let where = `WHERE o.shipping_address != ''`;
   const params = [];
   if (search) {
-    where += ` AND (o.shipping_address LIKE ? OR s.order_id LIKE ?)`;
+    where += ` AND (o.shipping_address LIKE ? OR o.order_id LIKE ?)`;
     params.push(`%${search}%`, `%${search}%`);
   }
 
   const rows = db.prepare(`
     SELECT
       o.shipping_address,
-      COUNT(DISTINCT s.order_id)      as order_count,
+      COUNT(DISTINCT o.order_id)        as order_count,
+      COALESCE(SUM(o.addr_shipped_qty), 0) as total_units,
+      COALESCE(SUM(o.addr_requested_qty),0) as total_requested,
       COUNT(DISTINCT s.tracking_number) as package_count,
-      SUM(s.shipped_quantity)         as total_units,
-      MIN(s.request_date)             as earliest,
-      MAX(s.shipment_date)            as latest_shipment
-    FROM removal_shipments s
-    JOIN removal_orders o ON s.order_id = o.order_id
+      MIN(s.request_date)               as earliest,
+      MAX(s.shipment_date)              as latest_shipment
+    FROM removal_orders o
+    LEFT JOIN removal_shipments s ON s.order_id = o.order_id
     ${where}
     GROUP BY o.shipping_address
     ORDER BY total_units DESC
   `).all(...params);
 
-  // For each address, also get the order IDs
+  // For each address, also get the per-order breakdown
   const result = rows.map(r => {
     const orders = db.prepare(`
-      SELECT s.order_id, MIN(s.request_date) as request_date,
-        SUM(s.shipped_quantity) as units,
+      SELECT o.order_id,
+        o.addr_shipped_qty   as units,
+        o.addr_requested_qty as requested,
+        o.order_status,
+        o.status,
         COUNT(DISTINCT s.tracking_number) as packages,
-        o.status
-      FROM removal_shipments s
-      JOIN removal_orders o ON s.order_id = o.order_id
-      WHERE o.shipping_address = ? AND s.order_id != ''
-      GROUP BY s.order_id ORDER BY request_date DESC
+        MIN(s.request_date) as request_date
+      FROM removal_orders o
+      LEFT JOIN removal_shipments s ON s.order_id = o.order_id
+      WHERE o.shipping_address = ? AND o.order_id != ''
+      GROUP BY o.order_id
+      ORDER BY request_date DESC
     `).all(r.shipping_address);
     return { ...r, orders };
   });

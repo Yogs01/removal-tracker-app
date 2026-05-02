@@ -44,9 +44,11 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_ord_order     ON removal_orders(order_id);
 `);
 
-// Migrate: add shipping_address column if it doesn't exist yet
+// Migrate: add columns if they don't exist yet
 try { db.exec(`ALTER TABLE removal_orders ADD COLUMN shipping_address TEXT DEFAULT ''`); } catch(_) {}
 try { db.exec(`ALTER TABLE removal_orders ADD COLUMN order_type TEXT DEFAULT ''`); } catch(_) {}
 try { db.exec(`ALTER TABLE removal_orders ADD COLUMN order_status TEXT DEFAULT ''`); } catch(_) {}
+try { db.exec(`ALTER TABLE removal_orders ADD COLUMN addr_shipped_qty INTEGER DEFAULT 0`); } catch(_) {}
+try { db.exec(`ALTER TABLE removal_orders ADD COLUMN addr_requested_qty INTEGER DEFAULT 0`); } catch(_) {}
 
 module.exports = db;
