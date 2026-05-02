@@ -238,8 +238,9 @@ tr:hover td{background:var(--bg)}
        ondrop="handleDrop(event)">
     <input type="file" id="fileInput" accept=".csv,.txt,.tsv,.xlsx" onchange="uploadFile(this.files[0])"/>
     <h3>Upload Removal Shipment Detail Report</h3>
-    <p>Drag & drop or click to browse<br/>
+    <p>Drag & drop or click to browse · Accepts <strong>.txt, .csv, or .xlsx</strong><br/>
        Download from: <strong>Amazon Seller Central → Reports → Fulfillment → Removals → Removal Shipment Detail</strong><br/>
+       ⚠️ Use <strong>.txt format</strong> to preserve full USPS tracking numbers (Excel truncates long numbers).<br/>
        Re-uploading the same file skips already-imported rows automatically.</p>
     <div class="upload-cta">Choose File</div>
     <div class="progress-wrap" id="progressWrap"><div class="progress-bar" id="progressBar"></div></div>

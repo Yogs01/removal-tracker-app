@@ -23,6 +23,38 @@ function parseDate(v) {
   const m = String(v).trim().match(/^(\d{4}-\d{2}-\d{2})/);
   return m ? m[1] : String(v).trim();
 }
+
+// Parse a delimited line, respecting quoted fields
+function parseLine(line, delim) {
+  const vals = [];
+  let cur = '', inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') { inQ = !inQ; }
+    else if (ch === delim && !inQ) { vals.push(cur); cur = ''; }
+    else { cur += ch; }
+  }
+  vals.push(cur);
+  return vals.map(v => v.trim());
+}
+
+// Parse TXT/CSV as plain text — preserves full tracking numbers (no Excel float conversion)
+function parsePlainText(filePath) {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines   = content.split(/\r?\n/).map(l => l.trimEnd()).filter(l => l.length);
+  if (lines.length < 2) return [];
+  const delim   = lines[0].includes('\t') ? '\t' : ',';
+  const headers = parseLine(lines[0], delim).map(h => h.replace(/^﻿/, '')); // strip BOM
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const vals = parseLine(lines[i], delim);
+    if (!vals.some(v => v)) continue;
+    const row = {};
+    headers.forEach((h, idx) => { row[h] = vals[idx] !== undefined ? vals[idx] : ''; });
+    rows.push(row);
+  }
+  return rows;
+}
 function hash(...p) { return crypto.createHash('md5').update(p.join('|')).digest('hex'); }
 function fileHash(fp) { return crypto.createHash('md5').update(fs.readFileSync(fp)).digest('hex'); }
 
@@ -95,11 +127,18 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
   setImmediate(() => {
     const job = jobs[jobId];
     try {
-      const wb = XLSX.readFile(req.file.path, { type: 'file', raw: false });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const raw   = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-      const rows  = raw.map(r => Object.fromEntries(Object.entries(r).map(([k,v]) => [k.trim(), v])));
-      console.log(`[${jobId}] rows=${rows.length}`);
+      const ext  = path.extname(req.file.originalname).toLowerCase();
+      let rows;
+      if (ext === '.txt' || ext === '.tsv' || ext === '.csv') {
+        // Use plain-text parser to preserve full tracking numbers
+        rows = parsePlainText(req.file.path);
+      } else {
+        const wb   = XLSX.readFile(req.file.path, { type: 'file', raw: false });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const raw   = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+        rows = raw.map(r => Object.fromEntries(Object.entries(r).map(([k,v]) => [k.trim(), v])));
+      }
+      console.log(`[${jobId}] rows=${rows.length} (${ext})`);
 
       let added = 0, skipped = 0;
       db.transaction(rows => {
