@@ -141,6 +141,183 @@ function buildRecord(row) {
   };
 }
 
+// ─── carrier tracking helpers ─────────────────────────────────────────────────
+// Node 25 has built-in fetch; use https module as fallback for older runtimes
+const https = require('https');
+
+function httpsGet(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const reqOpts = {
+      hostname: u.hostname,
+      path: u.pathname + u.search,
+      method: options.method || 'GET',
+      headers: options.headers || {},
+      timeout: 10000,
+    };
+    const req = https.request(reqOpts, res => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, text: () => Promise.resolve(data), json: () => Promise.resolve(JSON.parse(data)) }));
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Request timed out')); });
+    if (options.body) req.write(options.body);
+    req.end();
+  });
+}
+
+// fetchWithTimeout — uses native fetch (Node 18+) if available, else falls back to https module
+function fetchWithTimeout(url, options = {}, ms = 10000) {
+  if (typeof fetch === 'function') {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    return fetch(url, { ...options, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+  }
+  return httpsGet(url, options);
+}
+
+async function checkUPS(trackingNum) {
+  try {
+    const url = `https://www.ups.com/track/api/Track/GetStatus?loc=en_US`;
+    const body = JSON.stringify({ TrackRequest: { InquiryNumber: trackingNum } });
+    const res = await fetchWithTimeout(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0' },
+      body
+    }, 10000);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const pkg = data?.trackResponse?.shipment?.[0]?.package?.[0];
+    const act = pkg?.activity?.[0];
+    if (!act) return null;
+    const type = act.status?.type;
+    const status = type === 'D' ? 'Delivered'
+                 : type === 'O' ? 'Out for Delivery'
+                 : type === 'X' ? 'Exception'
+                 : 'In Transit';
+    const loc = [act.location?.address?.city, act.location?.address?.stateProvince].filter(Boolean).join(', ');
+    return { status, description: act.status?.description || '', location: loc };
+  } catch (e) {
+    return null;
+  }
+}
+
+// USPS requires a free User ID from https://www.usps.com/business/web-tools-apis/
+// Set the USPS_USER_ID environment variable to enable USPS tracking.
+// If USPS_USER_ID is not set, USPS tracking is skipped.
+async function checkUSPS(trackingNum) {
+  try {
+    const userId = process.env.USPS_USER_ID || '';
+    if (!userId) return null;
+    const xml = `<TrackFieldRequest USERID="${userId}"><TrackID ID="${trackingNum}"/></TrackFieldRequest>`;
+    const url = `https://secure.shippingapis.com/ShippingAPI.dll?API=TrackV2&XML=${encodeURIComponent(xml)}`;
+    const res = await fetchWithTimeout(url, {}, 10000);
+    if (!res.ok) return null;
+    const text = await res.text();
+    const event = text.match(/<Event>(.*?)<\/Event>/)?.[1] || '';
+    const city  = text.match(/<EventCity>(.*?)<\/EventCity>/)?.[1] || '';
+    const state = text.match(/<EventState>(.*?)<\/EventState>/)?.[1] || '';
+    const lower = event.toLowerCase();
+    const status = lower.includes('delivered') ? 'Delivered'
+                 : lower.includes('out for delivery') ? 'Out for Delivery'
+                 : lower.includes('exception') || lower.includes('alert') ? 'Exception'
+                 : 'In Transit';
+    return { status, description: event, location: [city, state].filter(Boolean).join(', ') };
+  } catch (e) {
+    return null;
+  }
+}
+
+async function checkAmazon(trackingNum) {
+  try {
+    const url = `https://track.amazon.com/api/tracker?trackingId=${trackingNum}`;
+    const res = await fetchWithTimeout(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
+    }, 10000);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const status = data.status === 'DELIVERED' ? 'Delivered'
+                 : data.status === 'OUT_FOR_DELIVERY' ? 'Out for Delivery'
+                 : 'In Transit';
+    return { status, description: data.statusDescription || status, location: '' };
+  } catch (e) {
+    return null;
+  }
+}
+
+function updateOrderStatuses() {
+  const orders = db.prepare(`SELECT DISTINCT order_id FROM removal_shipments WHERE order_id != ''`).all();
+  const upsertOrder = db.prepare(`INSERT OR IGNORE INTO removal_orders (order_id) VALUES (?)`);
+  const updateOrder = db.prepare(`UPDATE removal_orders SET status = ?, updated_at = datetime('now') WHERE order_id = ?`);
+
+  for (const { order_id } of orders) {
+    const trackings = db.prepare(`
+      SELECT DISTINCT ts.status
+      FROM removal_shipments s
+      LEFT JOIN tracking_status ts ON s.tracking_number = ts.tracking_number
+      WHERE s.order_id = ? AND s.tracking_number != '' AND ts.status IS NOT NULL
+    `).all(order_id);
+
+    if (!trackings.length) continue;
+    const statuses = trackings.map(t => t.status);
+    const orderStatus = statuses.every(s => s === 'Delivered') ? 'Delivered'
+      : statuses.some(s => s === 'Out for Delivery') ? 'Out for Delivery'
+      : statuses.some(s => s === 'Exception') ? 'Exception'
+      : statuses.some(s => s === 'In Transit') ? 'In Transit'
+      : 'In Transit';
+
+    upsertOrder.run(order_id);
+    updateOrder.run(orderStatus, order_id);
+  }
+}
+
+async function refreshTracking(batchSize = 50) {
+  // Get undelivered tracking numbers not checked in last 4 hours
+  const rows = db.prepare(`
+    SELECT DISTINCT s.tracking_number, s.carrier
+    FROM removal_shipments s
+    LEFT JOIN tracking_status ts ON s.tracking_number = ts.tracking_number
+    WHERE s.tracking_number != ''
+      AND (ts.status IS NULL OR ts.status NOT IN ('Delivered', 'Return to Sender'))
+      AND (ts.last_checked IS NULL OR ts.last_checked < datetime('now', '-4 hours'))
+    ORDER BY ts.last_checked ASC NULLS FIRST
+    LIMIT ?
+  `).all(batchSize);
+
+  const upsert = db.prepare(`
+    INSERT INTO tracking_status (tracking_number, status, description, location, last_checked)
+    VALUES (?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(tracking_number) DO UPDATE SET
+      status = excluded.status, description = excluded.description,
+      location = excluded.location, last_checked = excluded.last_checked
+  `);
+
+  let checked = 0, updated = 0;
+  for (const row of rows) {
+    try {
+      const carrier = normalizeCarrier(row.carrier, row.tracking_number);
+      let result = null;
+      if (carrier === 'UPS')    result = await checkUPS(row.tracking_number);
+      else if (carrier === 'USPS')   result = await checkUSPS(row.tracking_number);
+      else if (carrier === 'Amazon') result = await checkAmazon(row.tracking_number);
+
+      const status = result?.status || 'Unknown';
+      upsert.run(row.tracking_number, status, result?.description || '', result?.location || '');
+      if (result) updated++;
+      checked++;
+      await new Promise(r => setTimeout(r, 300)); // rate limit delay
+    } catch (e) {
+      console.error(`tracking check failed for ${row.tracking_number}:`, e.message);
+    }
+  }
+
+  // Update order statuses based on their tracking results
+  updateOrderStatuses();
+  console.log(`[tracking] checked=${checked} updated=${updated}`);
+  return { checked, updated, remaining: rows.length };
+}
+
 // ─── in-memory jobs ───────────────────────────────────────────────────────────
 const jobs = {};
 
@@ -266,7 +443,15 @@ app.get('/api/stats', (req, res) => {
     GROUP BY s.order_id ORDER BY request_date DESC LIMIT 5
   `).all();
 
-  res.json({ totals, byCarrier, byDisposition, byStatus, recentOrders });
+  const trackingStatusSummary = db.prepare(`
+    SELECT ts.status, COUNT(DISTINCT s.tracking_number) as count
+    FROM removal_shipments s
+    LEFT JOIN tracking_status ts ON s.tracking_number = ts.tracking_number
+    WHERE s.tracking_number != ''
+    GROUP BY ts.status ORDER BY count DESC
+  `).all();
+
+  res.json({ totals, byCarrier, byDisposition, byStatus, recentOrders, trackingStatusSummary });
 });
 
 // ─── GET /api/orders ─────────────────────────────────────────────────────────
@@ -360,25 +545,30 @@ app.get('/api/tracking', (req, res) => {
   const search = req.query.search || '';
   const carrier= req.query.carrier || '';
 
-  let where = `WHERE tracking_number != ''`;
+  let where = `WHERE s.tracking_number != ''`;
   const params = [];
-  if (search)  { where += ` AND (tracking_number LIKE ? OR order_id LIKE ?)`; params.push(`%${search}%`, `%${search}%`); }
+  if (search)  { where += ` AND (s.tracking_number LIKE ? OR s.order_id LIKE ?)`; params.push(`%${search}%`, `%${search}%`); }
   if (carrier) {
-    if (carrier === 'UPS')    where += ` AND tracking_number LIKE '1Z%'`;
-    if (carrier === 'USPS')   where += ` AND tracking_number GLOB '9[0-9]*'`;
-    if (carrier === 'Amazon') where += ` AND tracking_number LIKE 'TBA%'`;
+    if (carrier === 'UPS')    where += ` AND s.tracking_number LIKE '1Z%'`;
+    if (carrier === 'USPS')   where += ` AND s.tracking_number GLOB '9[0-9]*'`;
+    if (carrier === 'Amazon') where += ` AND s.tracking_number LIKE 'TBA%'`;
   }
 
-  const total = db.prepare(`SELECT COUNT(DISTINCT tracking_number) as n FROM removal_shipments ${where}`).get(...params).n;
+  const total = db.prepare(`SELECT COUNT(DISTINCT s.tracking_number) as n FROM removal_shipments s ${where}`).get(...params).n;
 
   const rows = db.prepare(`
-    SELECT tracking_number, order_id, carrier,
-      MIN(shipment_date) as shipment_date,
-      SUM(shipped_quantity) as units,
+    SELECT s.tracking_number, s.order_id, s.carrier,
+      MIN(s.shipment_date) as shipment_date,
+      SUM(s.shipped_quantity) as units,
       COUNT(*) as item_count,
-      GROUP_CONCAT(DISTINCT disposition) as dispositions
-    FROM removal_shipments ${where}
-    GROUP BY tracking_number ORDER BY shipment_date DESC
+      GROUP_CONCAT(DISTINCT s.disposition) as dispositions,
+      ts.status as tracking_status,
+      ts.location,
+      ts.last_checked
+    FROM removal_shipments s
+    LEFT JOIN tracking_status ts ON s.tracking_number = ts.tracking_number
+    ${where}
+    GROUP BY s.tracking_number ORDER BY s.shipment_date DESC
     LIMIT ? OFFSET ?
   `).all(...params, limit, offset);
 
@@ -588,6 +778,38 @@ app.delete('/api/reset', (req, res) => {
   db.prepare('DELETE FROM upload_log').run();
   res.json({ success: true });
 });
+
+// ─── GET /api/tracking/refresh — manually trigger a tracking check ────────────
+app.get('/api/tracking/refresh', async (req, res) => {
+  const batch = parseInt(req.query.batch) || 50;
+  res.json({ success: true, message: `Checking up to ${batch} tracking numbers in background...` });
+  refreshTracking(batch).catch(e => console.error('refresh error:', e.message));
+});
+
+// ─── GET /api/tracking/status-summary — counts by status ─────────────────────
+app.get('/api/tracking/status-summary', (req, res) => {
+  const summary = db.prepare(`
+    SELECT status, COUNT(*) as count
+    FROM tracking_status
+    GROUP BY status ORDER BY count DESC
+  `).all();
+  const lastChecked = db.prepare(`SELECT MAX(last_checked) as ts FROM tracking_status`).get()?.ts;
+  const totalTracking = db.prepare(`SELECT COUNT(DISTINCT tracking_number) as n FROM removal_shipments WHERE tracking_number != ''`).get().n;
+  const checkedCount = db.prepare(`SELECT COUNT(*) as n FROM tracking_status`).get().n;
+  res.json({ summary, lastChecked, totalTracking, checkedCount });
+});
+
+// ─── Auto-refresh tracking status every 4 hours ───────────────────────────────
+setInterval(() => {
+  console.log('[tracking] auto-refresh starting...');
+  refreshTracking(100).catch(e => console.error('[tracking] auto-refresh error:', e.message));
+}, 4 * 60 * 60 * 1000);
+
+// Run once 30 seconds after startup
+setTimeout(() => {
+  console.log('[tracking] initial tracking check...');
+  refreshTracking(100).catch(e => console.error('[tracking] initial check error:', e.message));
+}, 30000);
 
 // ─── start ────────────────────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {

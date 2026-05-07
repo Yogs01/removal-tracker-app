@@ -37,11 +37,22 @@ db.exec(`
     uploaded_at TEXT DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS tracking_status (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tracking_number TEXT UNIQUE NOT NULL,
+    status TEXT DEFAULT 'Unknown',
+    description TEXT DEFAULT '',
+    location TEXT DEFAULT '',
+    last_checked TEXT DEFAULT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_ship_order    ON removal_shipments(order_id);
   CREATE INDEX IF NOT EXISTS idx_ship_tracking ON removal_shipments(tracking_number);
   CREATE INDEX IF NOT EXISTS idx_ship_date     ON removal_shipments(shipment_date);
   CREATE INDEX IF NOT EXISTS idx_ship_carrier  ON removal_shipments(carrier);
   CREATE INDEX IF NOT EXISTS idx_ord_order     ON removal_orders(order_id);
+  CREATE INDEX IF NOT EXISTS idx_ts_tracking   ON tracking_status(tracking_number);
+  CREATE INDEX IF NOT EXISTS idx_ts_status     ON tracking_status(status);
 `);
 
 // Migrate: add columns if they don't exist yet
