@@ -286,9 +286,13 @@ tr:hover td{background:var(--bg)}
       <div class="table-meta" id="fnskuMeta">—</div>
     </div>
     <div class="filter-bar">
-      <input type="text" id="fnskuSearch"  placeholder="Search FNSKU or SKU…"    oninput="debounce(()=>loadFnsku(),350)" style="font-family:monospace"/>
-      <input type="text" id="fnskuOrderId" placeholder="Filter by Order ID…"     oninput="debounce(()=>loadFnsku(),350)" style="font-family:monospace"/>
-      <input type="text" id="fnskuAddr"    placeholder="Filter by address…"      oninput="debounce(()=>loadFnsku(),350)"/>
+      <input type="text" id="fnskuSearch"  placeholder="Search FNSKU or SKU…" oninput="debounce(()=>loadFnsku(),350)" style="font-family:monospace"/>
+      <select id="fnskuOrderId" onchange="loadFnsku()" style="font-family:monospace;min-width:200px">
+        <option value="">All Order IDs</option>
+      </select>
+      <select id="fnskuAddr" onchange="loadFnsku()" style="min-width:220px">
+        <option value="">All Addresses</option>
+      </select>
       <button class="btn btn-outline btn-sm" onclick="clearFnskuFilters()">Clear</button>
     </div>
     <div id="fnskuTableWrap">
@@ -624,12 +628,36 @@ async function toggleAddr(idx) {
 // ── BY FNSKU ──────────────────────────────────────────────────────────────────
 function clearFnskuFilters() {
   document.getElementById('fnskuSearch').value  = '';
-  document.getElementById('fnskuOrderId').value = '';
-  document.getElementById('fnskuAddr').value    = '';
+  document.getElementById('fnskuOrderId').selectedIndex = 0;
+  document.getElementById('fnskuAddr').selectedIndex    = 0;
   loadFnsku();
 }
 
+async function populateFnskuDropdowns() {
+  if (window._fnskuDropdownsLoaded) return;
+  window._fnskuDropdownsLoaded = true;
+  try {
+    const d = await fetch('/api/dropdown-options').then(r=>r.json());
+    const selOrder = document.getElementById('fnskuOrderId');
+    const selAddr  = document.getElementById('fnskuAddr');
+    d.orderIds.forEach(id => {
+      const o = document.createElement('option');
+      o.value = o.textContent = id;
+      selOrder.appendChild(o);
+    });
+    d.addresses.forEach(addr => {
+      const o = document.createElement('option');
+      o.value = addr;
+      // Show first line of address as label
+      o.textContent = addr.split('\n')[0] || addr;
+      o.title = addr; // full address on hover
+      selAddr.appendChild(o);
+    });
+  } catch(e) { console.error('dropdown load error:', e); }
+}
+
 async function loadFnsku() {
+  await populateFnskuDropdowns();
   const search  = document.getElementById('fnskuSearch')?.value  || '';
   const orderId = document.getElementById('fnskuOrderId')?.value || '';
   const addr    = document.getElementById('fnskuAddr')?.value    || '';

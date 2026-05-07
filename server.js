@@ -856,8 +856,9 @@ app.get('/api/by-fnsku', (req, res) => {
     params.push(`%${orderId}%`);
   }
   if (address) {
-    where += ` AND s.order_id IN (SELECT order_id FROM removal_orders WHERE shipping_address LIKE ?)`;
-    params.push(`%${address}%`);
+    // Try exact match first (from dropdown), fall back to LIKE for text search
+    where += ` AND s.order_id IN (SELECT order_id FROM removal_orders WHERE shipping_address = ? OR shipping_address LIKE ?)`;
+    params.push(address, `%${address}%`);
   }
 
   const rows = db.prepare(`
@@ -889,8 +890,8 @@ app.get('/api/fnsku-items', (req, res) => {
   const params = [fnsku];
   if (orderId) { where += ` AND s.order_id LIKE ?`; params.push(`%${orderId}%`); }
   if (address) {
-    where += ` AND s.order_id IN (SELECT order_id FROM removal_orders WHERE shipping_address LIKE ?)`;
-    params.push(`%${address}%`);
+    where += ` AND s.order_id IN (SELECT order_id FROM removal_orders WHERE shipping_address = ? OR shipping_address LIKE ?)`;
+    params.push(address, `%${address}%`);
   }
 
   const items = db.prepare(`
@@ -954,6 +955,21 @@ app.get('/api/address-items', (req, res) => {
   }));
 
   res.json(result);
+});
+
+// ─── GET /api/dropdown-options — lightweight lists for filter dropdowns ───────
+app.get('/api/dropdown-options', (req, res) => {
+  const orderIds = db.prepare(`
+    SELECT DISTINCT order_id FROM removal_shipments
+    WHERE order_id != '' ORDER BY order_id ASC
+  `).all().map(r => r.order_id);
+
+  const addresses = db.prepare(`
+    SELECT DISTINCT shipping_address FROM removal_orders
+    WHERE shipping_address != '' ORDER BY shipping_address ASC
+  `).all().map(r => r.shipping_address);
+
+  res.json({ orderIds, addresses });
 });
 
 // ─── GET /api/uploads ─────────────────────────────────────────────────────────
