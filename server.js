@@ -823,6 +823,38 @@ app.get('/api/addresses', (req, res) => {
   res.json(result);
 });
 
+// ─── GET /api/address-items — all FNSKUs shipped to a given address ───────────
+app.get('/api/address-items', (req, res) => {
+  const address = req.query.address || '';
+  if (!address) return res.json([]);
+
+  const items = db.prepare(`
+    SELECT
+      s.fnsku,
+      s.sku,
+      s.order_id,
+      s.tracking_number,
+      s.carrier,
+      s.disposition,
+      s.shipped_quantity,
+      s.shipment_date,
+      s.request_date
+    FROM removal_shipments s
+    JOIN removal_orders o ON s.order_id = o.order_id
+    WHERE o.shipping_address = ?
+    ORDER BY s.order_id, s.tracking_number, s.fnsku
+  `).all(address);
+
+  // Attach carrier name and tracking URL
+  const result = items.map(r => ({
+    ...r,
+    carrier_name: normalizeCarrier(r.carrier, r.tracking_number),
+    tracking_url: trackingUrl(r.carrier, r.tracking_number),
+  }));
+
+  res.json(result);
+});
+
 // ─── GET /api/uploads ─────────────────────────────────────────────────────────
 app.get('/api/uploads', (req, res) => {
   const logs = db.prepare('SELECT * FROM upload_log ORDER BY uploaded_at DESC LIMIT 20').all();

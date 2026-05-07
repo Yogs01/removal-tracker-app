@@ -447,10 +447,13 @@ async function loadAddresses() {
       <div class="metric m-orange" style="margin:0"><div class="metric-label">Total Units</div><div class="metric-val">${fmt(totalUnits)}</div></div>
     </div>`;
 
+    // Store address data for lazy-loading items
+    window._addrData = data;
+
     data.forEach((addr, idx) => {
-      const lines   = (addr.shipping_address||'').split('\n').map(l=>l.trim()).filter(Boolean);
-      const name    = lines[0] || 'Unknown';
-      const detail  = lines.slice(1).join('\n');
+      const lines  = (addr.shipping_address||'').split('\n').map(l=>l.trim()).filter(Boolean);
+      const name   = lines[0] || 'Unknown';
+      const detail = lines.slice(1).join('\n');
       html += `
         <div class="addr-card">
           <div class="addr-header" onclick="toggleAddr(${idx})">
@@ -460,7 +463,7 @@ async function loadAddresses() {
             </div>
             <div class="addr-stats">
               <div class="addr-stat">
-                <div class="addr-stat-val m-orange" style="color:var(--orange)">${fmt(addr.total_units||0)}</div>
+                <div class="addr-stat-val" style="color:var(--orange)">${fmt(addr.total_units||0)}</div>
                 <div class="addr-stat-lbl">Units</div>
               </div>
               <div class="addr-stat">
@@ -475,19 +478,9 @@ async function loadAddresses() {
             </div>
           </div>
           <div class="addr-orders" id="addrOrders${idx}">
-            <table style="font-size:12px">
-              <thead><tr><th>Order ID</th><th>Requested</th><th>Units</th><th>Packages</th><th>Status</th></tr></thead>
-              <tbody>
-                ${(addr.orders||[]).map(o=>`
-                  <tr>
-                    <td><button class="track-link" style="background:none;border:none;cursor:pointer;font-family:monospace;font-size:12px;font-weight:700;color:var(--accent)" onclick="openOrderModal('${esc(o.order_id)}')">${esc(o.order_id)}</button></td>
-                    <td>${fmtDate(o.request_date)}</td>
-                    <td style="text-align:center"><strong>${fmt(o.units)}</strong></td>
-                    <td style="text-align:center">${fmt(o.packages)}</td>
-                    <td>${o.order_status ? `<span class="badge badge-gray">${esc(o.order_status)}</span>` : statusBadge(o.status)}</td>
-                  </tr>`).join('')}
-              </tbody>
-            </table>
+            <div id="addrItems${idx}" style="padding:12px 18px">
+              <span style="color:var(--muted);font-size:12px"><span class="spinner"></span> Loading items…</span>
+            </div>
           </div>
         </div>`;
     });
@@ -495,11 +488,91 @@ async function loadAddresses() {
   } catch(e) { wrap.innerHTML = `<div class="empty-state"><h3>Error loading addresses</h3></div>`; }
 }
 
-function toggleAddr(idx) {
-  const orders = document.getElementById('addrOrders' + idx);
-  const chev   = document.getElementById('addrChev' + idx);
-  const open   = orders.classList.toggle('open');
+async function toggleAddr(idx) {
+  const panel = document.getElementById('addrOrders' + idx);
+  const chev  = document.getElementById('addrChev' + idx);
+  const open  = panel.classList.toggle('open');
   chev.textContent = open ? '▲' : '▼';
+  if (!open) return;
+
+  const itemsDiv = document.getElementById('addrItems' + idx);
+  // Already loaded?
+  if (itemsDiv.dataset.loaded) return;
+  itemsDiv.dataset.loaded = '1';
+
+  const addr = window._addrData?.[idx];
+  if (!addr) return;
+
+  try {
+    const items = await fetch(`/api/address-items?address=${encodeURIComponent(addr.shipping_address)}`).then(r=>r.json());
+
+    if (!items.length) {
+      itemsDiv.innerHTML = `<div style="padding:8px 0;color:var(--muted);font-size:12px">No shipment detail found for this address.</div>`;
+      return;
+    }
+
+    // Group by order_id for summary header, then list all FNSKUs
+    const orderIds = [...new Set(items.map(i=>i.order_id))];
+
+    let html = `
+      <div style="margin-bottom:14px">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">
+          Orders (${orderIds.length})
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${orderIds.map(oid=>`
+            <button onclick="openOrderModal('${esc(oid)}')"
+              style="background:var(--light);border:1px solid var(--border);border-radius:5px;padding:3px 8px;font-family:monospace;font-size:11px;font-weight:700;color:var(--accent);cursor:pointer">
+              ${esc(oid)}
+            </button>`).join('')}
+        </div>
+      </div>
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">
+        Shipped Items (${items.length} rows · ${items.reduce((a,r)=>a+(r.shipped_quantity||0),0)} units)
+      </div>
+      <div class="tbl-scroll">
+      <table style="font-size:12px;width:100%">
+        <thead>
+          <tr>
+            <th>FNSKU</th>
+            <th>SKU</th>
+            <th>Removal Order ID</th>
+            <th>Tracking #</th>
+            <th>Carrier</th>
+            <th>Units</th>
+            <th>Disposition</th>
+            <th>Shipped</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map(r=>`
+            <tr>
+              <td><span class="mono" style="font-size:11px">${esc(r.fnsku||'—')}</span></td>
+              <td><span class="mono" style="font-size:11px">${esc(r.sku||'—')}</span></td>
+              <td>
+                <button onclick="openOrderModal('${esc(r.order_id)}')"
+                  style="background:none;border:none;cursor:pointer;font-family:monospace;font-size:11px;font-weight:700;color:var(--accent)">
+                  ${esc(r.order_id)}
+                </button>
+              </td>
+              <td>
+                ${r.tracking_number
+                  ? `<a class="track-link" href="${esc(r.tracking_url)}" target="_blank" style="font-size:11px">${esc(r.tracking_number)}</a>`
+                  : '<span style="color:var(--muted)">—</span>'}
+              </td>
+              <td>${carrierChip(r.carrier_name)}</td>
+              <td style="text-align:center"><strong>${r.shipped_quantity||0}</strong></td>
+              <td><span class="badge badge-gray" style="font-size:10px">${esc(r.disposition||'—')}</span></td>
+              <td style="color:var(--muted)">${fmtDate(r.shipment_date)}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+      </div>`;
+
+    itemsDiv.innerHTML = html;
+  } catch(e) {
+    itemsDiv.innerHTML = `<div style="color:var(--red);font-size:12px">Error loading items: ${esc(e.message)}</div>`;
+  }
 }
 
 async function loadUploadHistory() {
