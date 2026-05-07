@@ -58,6 +58,31 @@ function parsePlainText(filePath) {
 function hash(...p) { return crypto.createHash('md5').update(p.join('|')).digest('hex'); }
 function fileHash(fp) { return crypto.createHash('md5').update(fs.readFileSync(fp)).digest('hex'); }
 
+// ─── dedup helper — runs after every upload ───────────────────────────────────
+function runDedup() {
+  // Pass 1: remove rows where row_hash is identical (exact duplicates)
+  const p1 = db.prepare(`
+    DELETE FROM removal_shipments
+    WHERE rowid NOT IN (
+      SELECT MIN(rowid) FROM removal_shipments GROUP BY row_hash
+    )
+  `).run();
+
+  // Pass 2: remove rows where order_id + sku + tracking_number + shipment_date match
+  // (catches cases where hash differs due to minor field variation but record is the same)
+  const p2 = db.prepare(`
+    DELETE FROM removal_shipments
+    WHERE rowid NOT IN (
+      SELECT MIN(rowid) FROM removal_shipments
+      GROUP BY order_id, sku, tracking_number, shipment_date
+    )
+  `).run();
+
+  const removed = p1.changes + p2.changes;
+  if (removed > 0) console.log(`[dedup] removed ${removed} duplicate rows`);
+  return removed;
+}
+
 // Detect carrier from carrier code + tracking number
 function normalizeCarrier(carrier, tracking) {
   const c = (carrier || '').toUpperCase();
@@ -156,14 +181,21 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
         db.prepare(`INSERT OR IGNORE INTO removal_orders (order_id) VALUES (?)`).run(oid);
       }
 
+      // Auto-dedup: remove any duplicates introduced by this upload
+      const dupsRemoved = runDedup();
+      if (dupsRemoved > 0) {
+        skipped += dupsRemoved;
+        console.log(`[${jobId}] auto-dedup removed ${dupsRemoved} duplicate rows`);
+      }
+
       try {
         const fh = fileHash(req.file.path);
         db.prepare('INSERT OR IGNORE INTO upload_log (filename,file_hash,rows_added,rows_skipped) VALUES (?,?,?,?)')
           .run(req.file.originalname, fh, added, skipped);
       } catch(_) {}
 
-      job.status = 'done'; job.added = added; job.skipped = skipped; job.progress = 100;
-      console.log(`[${jobId}] done — +${added} added, ${skipped} skipped`);
+      job.status = 'done'; job.added = added; job.skipped = skipped; job.dupsRemoved = dupsRemoved; job.progress = 100;
+      console.log(`[${jobId}] done — +${added} added, ${skipped} skipped, ${dupsRemoved} dups removed`);
     } catch(e) {
       console.error(`[${jobId}] error:`, e.message);
       job.status = 'error'; job.error = e.message;
@@ -500,26 +532,7 @@ app.get('/api/uploads', (req, res) => {
 
 // ─── GET /api/dedup — find & remove duplicate shipment rows ──────────────────
 app.get('/api/dedup', (req, res) => {
-  // Find rows where order_id+sku+tracking_number+shipment_date are identical, keep lowest id
-  const dupes = db.prepare(`
-    SELECT id FROM removal_shipments
-    WHERE id NOT IN (
-      SELECT MIN(id) FROM removal_shipments
-      GROUP BY order_id, sku, tracking_number, shipment_date
-    )
-  `).all();
-
-  const count = dupes.length;
-  if (count > 0) {
-    db.prepare(`
-      DELETE FROM removal_shipments
-      WHERE id NOT IN (
-        SELECT MIN(id) FROM removal_shipments
-        GROUP BY order_id, sku, tracking_number, shipment_date
-      )
-    `).run();
-  }
-
+  const count = runDedup();
   const total = db.prepare('SELECT COUNT(*) as n FROM removal_shipments').get().n;
   res.send(`
     <html><body style="font-family:sans-serif;padding:32px">
