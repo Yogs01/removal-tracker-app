@@ -266,7 +266,10 @@ tr:hover td{background:var(--bg)}
       <div class="table-meta" id="addrMeta">—</div>
     </div>
     <div class="filter-bar">
-      <input type="text" id="addrSearch" placeholder="Search address or order ID…" oninput="debounce(()=>loadAddresses(),350)"/>
+      <input type="text" id="addrSearch"   placeholder="Search address…"         oninput="debounce(()=>loadAddresses(),350)"/>
+      <input type="text" id="addrOrderId"  placeholder="Filter by Order ID…"     oninput="debounce(()=>loadAddresses(),350)" style="font-family:monospace"/>
+      <input type="text" id="addrFnsku"    placeholder="Filter by FNSKU…"        oninput="debounce(()=>loadAddresses(),350)" style="font-family:monospace"/>
+      <button class="btn btn-outline btn-sm" onclick="clearAddrFilters()">Clear</button>
     </div>
     <div id="addrTableWrap">
       <table><tbody><tr><td colspan="6" style="text-align:center;padding:32px"><span class="spinner"></span>Loading…</td></tr></tbody></table>
@@ -425,12 +428,25 @@ async function uploadFile(file, type) {
   }
 }
 // ── BY ADDRESS ────────────────────────────────────────────────────────────────
+function clearAddrFilters() {
+  document.getElementById('addrSearch').value  = '';
+  document.getElementById('addrOrderId').value = '';
+  document.getElementById('addrFnsku').value   = '';
+  loadAddresses();
+}
+
 async function loadAddresses() {
-  const search = document.getElementById('addrSearch')?.value || '';
+  const search  = document.getElementById('addrSearch')?.value  || '';
+  const orderId = document.getElementById('addrOrderId')?.value || '';
+  const fnsku   = document.getElementById('addrFnsku')?.value   || '';
   const wrap = document.getElementById('addrTableWrap');
   wrap.innerHTML = `<table><tbody><tr><td colspan="6" style="text-align:center;padding:32px"><span class="spinner"></span>Loading…</td></tr></tbody></table>`;
   try {
-    const data = await fetch(`/api/addresses?search=${encodeURIComponent(search)}`).then(r=>r.json());
+    const params = new URLSearchParams();
+    if (search)  params.set('search',   search);
+    if (orderId) params.set('order_id', orderId);
+    if (fnsku)   params.set('fnsku',    fnsku);
+    const data = await fetch(`/api/addresses?${params}`).then(r=>r.json());
     document.getElementById('addrMeta').textContent = `${data.length} destination${data.length!==1?'s':''}`;
     if (!data.length) {
       wrap.innerHTML = `<div class="empty-state"><h3>No address data yet</h3><p>Upload your "Removals with Address" file on the Upload tab to link orders to destinations.</p></div>`;
@@ -447,8 +463,9 @@ async function loadAddresses() {
       <div class="metric m-orange" style="margin:0"><div class="metric-label">Total Units</div><div class="metric-val">${fmt(totalUnits)}</div></div>
     </div>`;
 
-    // Store address data for lazy-loading items
-    window._addrData = data;
+    // Store address data for lazy-loading items; store active filters so toggleAddr can invalidate cache
+    window._addrData    = data;
+    window._addrFilters = { orderId, fnsku };
 
     data.forEach((addr, idx) => {
       const lines  = (addr.shipping_address||'').split('\n').map(l=>l.trim()).filter(Boolean);
@@ -496,15 +513,23 @@ async function toggleAddr(idx) {
   if (!open) return;
 
   const itemsDiv = document.getElementById('addrItems' + idx);
-  // Already loaded?
-  if (itemsDiv.dataset.loaded) return;
+  // Already loaded with same filters? Skip re-fetch
+  const curFilter = JSON.stringify(window._addrFilters || {});
+  if (itemsDiv.dataset.loaded && itemsDiv.dataset.filter === curFilter) return;
+  itemsDiv.dataset.filter = curFilter;
   itemsDiv.dataset.loaded = '1';
+  itemsDiv.innerHTML = `<span style="color:var(--muted);font-size:12px"><span class="spinner"></span> Loading items…</span>`;
 
   const addr = window._addrData?.[idx];
   if (!addr) return;
 
   try {
-    const items = await fetch(`/api/address-items?address=${encodeURIComponent(addr.shipping_address)}`).then(r=>r.json());
+    const orderId = document.getElementById('addrOrderId')?.value || '';
+    const fnsku   = document.getElementById('addrFnsku')?.value   || '';
+    const p = new URLSearchParams({ address: addr.shipping_address });
+    if (orderId) p.set('order_id', orderId);
+    if (fnsku)   p.set('fnsku',    fnsku);
+    const items = await fetch(`/api/address-items?${p}`).then(r=>r.json());
 
     if (!items.length) {
       itemsDiv.innerHTML = `<div style="padding:8px 0;color:var(--muted);font-size:12px">No shipment detail found for this address.</div>`;

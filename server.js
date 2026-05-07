@@ -771,19 +771,35 @@ app.post('/api/upload-addresses', upload.single('file'), (req, res) => {
 
 // ─── GET /api/addresses — grouped by shipping address ────────────────────────
 app.get('/api/addresses', (req, res) => {
-  const search = req.query.search || '';
-  let where = `WHERE o.shipping_address != ''`;
+  const search  = req.query.search   || '';
+  const orderId = req.query.order_id || '';
+  const fnsku   = req.query.fnsku    || '';
+
+  // When filtering by order_id or fnsku we need to join removal_shipments
+  const needsJoin = !!(orderId || fnsku);
+
+  let where  = `WHERE o.shipping_address != ''`;
   const params = [];
+
   if (search) {
     where += ` AND (o.shipping_address LIKE ? OR o.order_id LIKE ?)`;
     params.push(`%${search}%`, `%${search}%`);
+  }
+  if (orderId) {
+    where += ` AND o.order_id LIKE ?`;
+    params.push(`%${orderId}%`);
+  }
+  if (fnsku) {
+    // Filter to addresses that have at least one shipment with matching fnsku
+    where += ` AND o.order_id IN (SELECT DISTINCT order_id FROM removal_shipments WHERE fnsku LIKE ?)`;
+    params.push(`%${fnsku}%`);
   }
 
   // Query removal_orders only (no JOIN) to avoid row multiplication on SUM
   const rows = db.prepare(`
     SELECT
       o.shipping_address,
-      COUNT(o.order_id)                    as order_count,
+      COUNT(DISTINCT o.order_id)           as order_count,
       COALESCE(SUM(o.addr_shipped_qty),  0) as total_units,
       COALESCE(SUM(o.addr_requested_qty),0) as total_requested
     FROM removal_orders o
@@ -825,8 +841,15 @@ app.get('/api/addresses', (req, res) => {
 
 // ─── GET /api/address-items — all FNSKUs shipped to a given address ───────────
 app.get('/api/address-items', (req, res) => {
-  const address = req.query.address || '';
+  const address = req.query.address  || '';
+  const orderId = req.query.order_id || '';
+  const fnsku   = req.query.fnsku    || '';
   if (!address) return res.json([]);
+
+  let where = `WHERE o.shipping_address = ?`;
+  const params = [address];
+  if (orderId) { where += ` AND s.order_id LIKE ?`;  params.push(`%${orderId}%`); }
+  if (fnsku)   { where += ` AND s.fnsku    LIKE ?`;  params.push(`%${fnsku}%`);   }
 
   const items = db.prepare(`
     SELECT
@@ -841,9 +864,9 @@ app.get('/api/address-items', (req, res) => {
       s.request_date
     FROM removal_shipments s
     JOIN removal_orders o ON s.order_id = o.order_id
-    WHERE o.shipping_address = ?
+    ${where}
     ORDER BY s.order_id, s.tracking_number, s.fnsku
-  `).all(address);
+  `).all(...params);
 
   // Attach carrier name and tracking URL
   const result = items.map(r => ({
