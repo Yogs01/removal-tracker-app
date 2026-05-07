@@ -192,6 +192,7 @@ tr:hover td{background:var(--bg)}
       <div id="dispositionBars"></div>
     </div>
   </div>
+  <div id="topAddressesWrap"></div>
   <div class="table-card" id="recentCard" style="display:none">
     <div class="table-topbar"><h3>Recent Removal Orders</h3></div>
     <div class="tbl-scroll">
@@ -868,72 +869,41 @@ async function loadStats() {
 
     document.getElementById('chartsGrid').style.display = 'grid';
 
-    // Tracking status section — always render it
-    {
-      const tss = d.trackingStatusSummary || [];
-      const statusMap = {};
-      tss.forEach(r => { statusMap[r.status || 'Unknown'] = r.count; });
-      const totalPkg    = t.total_packages || 0;
-      const checkedCount = tss.reduce((a, r) => a + (r.count || 0), 0);
-      const unchecked   = Math.max(0, totalPkg - checkedCount);
+    // Top Destinations chart
+    try {
+      const addrData = await fetch('/api/addresses').then(r=>r.json());
+      if (addrData.length) {
+        const top = addrData.slice(0, 10);
+        const maxUnits = top[0]?.total_units || 1;
+        const COLORS = ['#4f46e5','#7c3aed','#2563eb','#0891b2','#059669','#ca8a04','#ea580c','#dc2626','#db2777','#9333ea'];
+        const barsHtml = top.map((a, i) => {
+          const lines = (a.shipping_address||'').split('\n').map(l=>l.trim()).filter(Boolean);
+          const name  = lines[0] || 'Unknown';
+          const pct   = (a.total_units / maxUnits * 100).toFixed(1);
+          return `
+            <div class="bar-row" title="${esc(a.shipping_address)}">
+              <div class="bar-label" style="min-width:160px;max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(name)}">${esc(name)}</div>
+              <div class="bar-track" style="flex:1"><div class="bar-fill" style="width:${pct}%;background:${COLORS[i%COLORS.length]}"></div></div>
+              <div class="bar-val" style="min-width:90px;text-align:right">${fmt(a.total_units)} units · ${fmt(a.order_count)} orders</div>
+            </div>`;
+        }).join('');
 
-      // Load carrier config from status-summary
-      let cfgHtml = '';
-      try {
-        const cfg = await fetch('/api/tracking/status-summary').then(r=>r.json());
-        const c   = cfg.config || {};
-        const parts = [];
-        parts.push(`UPS: ${c.ups ? '<span style="color:var(--green)">✓ active</span>' : '<span style="color:var(--red)">✗ needs UPS_CLIENT_ID + UPS_CLIENT_SECRET</span>'}`);
-        parts.push(`USPS: ${c.usps ? '<span style="color:var(--green)">✓ active</span>' : '<span style="color:var(--red)">✗ needs USPS_USER_ID</span>'}`);
-        parts.push(`Amazon TBA: <span style="color:var(--muted)">no public API — check manually</span>`);
-        if (!c.ups || !c.usps) {
-          cfgHtml = `<div style="font-size:11px;background:#fef9ee;border:1px solid #fcd34d;border-radius:6px;padding:8px 12px;margin-top:10px;line-height:1.8">
-            <b>⚙️ Setup needed for automated tracking:</b><br>${parts.join('<br>')}
-            <br><span style="color:var(--muted)">→ Add env vars in Railway → Variables tab and redeploy.</span>
-          </div>`;
+        let addrWrap = document.getElementById('topAddressesWrap');
+        if (!addrWrap) {
+          addrWrap = document.createElement('div');
+          addrWrap.id = 'topAddressesWrap';
+          document.getElementById('chartsGrid').insertAdjacentElement('afterend', addrWrap);
         }
-      } catch(_) {}
-
-      const html = `
-        <div class="chart-card" style="margin-bottom:20px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-            <div class="chart-title" style="margin-bottom:0">Tracking Status</div>
-            <button class="btn btn-outline btn-sm" onclick="triggerRefreshTracking()" style="font-size:12px">&#x21BB; Refresh Tracking</button>
-          </div>
-          <div style="font-size:12px;color:var(--muted);margin-bottom:10px">${checkedCount.toLocaleString()} of ${totalPkg.toLocaleString()} packages have been checked</div>
-          <div class="ts-grid">
-            <div class="ts-card ts-delivered">
-              <div class="ts-count">${(statusMap['Delivered'] || 0).toLocaleString()}</div>
-              <div class="ts-label">Delivered</div>
+        addrWrap.innerHTML = `
+          <div class="chart-card" style="margin-bottom:20px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+              <div class="chart-title" style="margin-bottom:0">Top Destinations by Units Shipped</div>
+              <span style="font-size:11px;color:var(--muted)">${addrData.length} total destinations</span>
             </div>
-            <div class="ts-card ts-transit">
-              <div class="ts-count">${(statusMap['In Transit'] || 0).toLocaleString()}</div>
-              <div class="ts-label">In Transit</div>
-            </div>
-            <div class="ts-card ts-ofd">
-              <div class="ts-count">${(statusMap['Out for Delivery'] || 0).toLocaleString()}</div>
-              <div class="ts-label">Out for Delivery</div>
-            </div>
-            <div class="ts-card ts-exception">
-              <div class="ts-count">${(statusMap['Exception'] || 0).toLocaleString()}</div>
-              <div class="ts-label">Exception</div>
-            </div>
-            <div class="ts-card ts-unknown">
-              <div class="ts-count">${(unchecked + (statusMap['Unknown'] || 0)).toLocaleString()}</div>
-              <div class="ts-label">Not Checked</div>
-            </div>
-          </div>
-          ${cfgHtml}
-        </div>`;
-
-      let tsWrap = document.getElementById('trackingStatusWrap');
-      if (!tsWrap) {
-        tsWrap = document.createElement('div');
-        tsWrap.id = 'trackingStatusWrap';
-        document.getElementById('chartsGrid').insertAdjacentElement('afterend', tsWrap);
+            ${barsHtml}
+          </div>`;
       }
-      tsWrap.innerHTML = html;
-    }
+    } catch(_) {}
 
     // Recent orders
     if (d.recentOrders?.length) {
