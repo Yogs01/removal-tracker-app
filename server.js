@@ -839,6 +839,84 @@ app.get('/api/addresses', (req, res) => {
   res.json(result);
 });
 
+// ─── GET /api/by-fnsku — grouped by FNSKU ────────────────────────────────────
+app.get('/api/by-fnsku', (req, res) => {
+  const search  = req.query.search   || '';
+  const orderId = req.query.order_id || '';
+  const address = req.query.address  || '';
+
+  let where = `WHERE s.fnsku != ''`;
+  const params = [];
+  if (search) {
+    where += ` AND (s.fnsku LIKE ? OR s.sku LIKE ?)`;
+    params.push(`%${search}%`, `%${search}%`);
+  }
+  if (orderId) {
+    where += ` AND s.order_id LIKE ?`;
+    params.push(`%${orderId}%`);
+  }
+  if (address) {
+    where += ` AND s.order_id IN (SELECT order_id FROM removal_orders WHERE shipping_address LIKE ?)`;
+    params.push(`%${address}%`);
+  }
+
+  const rows = db.prepare(`
+    SELECT
+      s.fnsku,
+      MAX(s.sku)                              AS sku,
+      SUM(s.shipped_quantity)                 AS total_units,
+      COUNT(DISTINCT s.order_id)              AS order_count,
+      COUNT(DISTINCT s.tracking_number)       AS package_count,
+      GROUP_CONCAT(DISTINCT s.disposition)    AS dispositions,
+      MAX(s.shipment_date)                    AS last_shipped
+    FROM removal_shipments s
+    ${where}
+    GROUP BY s.fnsku
+    ORDER BY total_units DESC
+  `).all(...params);
+
+  res.json(rows);
+});
+
+// ─── GET /api/fnsku-items — all shipment rows for a given FNSKU ───────────────
+app.get('/api/fnsku-items', (req, res) => {
+  const fnsku   = req.query.fnsku    || '';
+  const orderId = req.query.order_id || '';
+  const address = req.query.address  || '';
+  if (!fnsku) return res.json([]);
+
+  let where = `WHERE s.fnsku = ?`;
+  const params = [fnsku];
+  if (orderId) { where += ` AND s.order_id LIKE ?`; params.push(`%${orderId}%`); }
+  if (address) {
+    where += ` AND s.order_id IN (SELECT order_id FROM removal_orders WHERE shipping_address LIKE ?)`;
+    params.push(`%${address}%`);
+  }
+
+  const items = db.prepare(`
+    SELECT
+      s.order_id,
+      s.tracking_number,
+      s.carrier,
+      s.disposition,
+      s.shipped_quantity,
+      s.shipment_date,
+      o.shipping_address
+    FROM removal_shipments s
+    LEFT JOIN removal_orders o ON s.order_id = o.order_id
+    ${where}
+    ORDER BY s.order_id, s.shipment_date
+  `).all(...params);
+
+  const result = items.map(r => ({
+    ...r,
+    carrier_name: normalizeCarrier(r.carrier, r.tracking_number),
+    tracking_url: trackingUrl(r.carrier, r.tracking_number),
+  }));
+
+  res.json(result);
+});
+
 // ─── GET /api/address-items — all FNSKUs shipped to a given address ───────────
 app.get('/api/address-items', (req, res) => {
   const address = req.query.address  || '';
