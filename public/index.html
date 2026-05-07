@@ -351,10 +351,14 @@ function showToast(msg, duration = 3000) {
 }
 
 async function triggerRefreshTracking() {
-  showToast('Refreshing tracking status in background…', 4000);
+  showToast('Checking tracking status…', 3000);
   try {
-    const d = await fetch('/api/tracking/refresh?batch=100').then(r => r.json());
-    if (!d.success) showToast('Refresh failed.', 3000);
+    const d = await fetch('/api/tracking/refresh?batch=200').then(r => r.json());
+    if (d.success) {
+      showToast(d.message || 'Tracking refresh started in background.', 5000);
+    } else {
+      showToast('⚠️ ' + (d.message || 'No carrier credentials configured.'), 8000);
+    }
   } catch (e) {
     showToast('Refresh request failed: ' + e.message, 4000);
   }
@@ -548,14 +552,31 @@ async function loadStats() {
 
     document.getElementById('chartsGrid').style.display = 'grid';
 
-    // Tracking status section
-    const tss = d.trackingStatusSummary || [];
-    if (tss.length) {
+    // Tracking status section — always render it
+    {
+      const tss = d.trackingStatusSummary || [];
       const statusMap = {};
       tss.forEach(r => { statusMap[r.status || 'Unknown'] = r.count; });
-      const totalPkg = t.total_packages || 0;
+      const totalPkg    = t.total_packages || 0;
       const checkedCount = tss.reduce((a, r) => a + (r.count || 0), 0);
-      const unchecked = totalPkg - checkedCount;
+      const unchecked   = Math.max(0, totalPkg - checkedCount);
+
+      // Load carrier config from status-summary
+      let cfgHtml = '';
+      try {
+        const cfg = await fetch('/api/tracking/status-summary').then(r=>r.json());
+        const c   = cfg.config || {};
+        const parts = [];
+        parts.push(`UPS: ${c.ups ? '<span style="color:var(--green)">✓ active</span>' : '<span style="color:var(--red)">✗ needs UPS_CLIENT_ID + UPS_CLIENT_SECRET</span>'}`);
+        parts.push(`USPS: ${c.usps ? '<span style="color:var(--green)">✓ active</span>' : '<span style="color:var(--red)">✗ needs USPS_USER_ID</span>'}`);
+        parts.push(`Amazon TBA: <span style="color:var(--muted)">no public API — check manually</span>`);
+        if (!c.ups || !c.usps) {
+          cfgHtml = `<div style="font-size:11px;background:#fef9ee;border:1px solid #fcd34d;border-radius:6px;padding:8px 12px;margin-top:10px;line-height:1.8">
+            <b>⚙️ Setup needed for automated tracking:</b><br>${parts.join('<br>')}
+            <br><span style="color:var(--muted)">→ Add env vars in Railway → Variables tab and redeploy.</span>
+          </div>`;
+        }
+      } catch(_) {}
 
       const html = `
         <div class="chart-card" style="margin-bottom:20px">
@@ -563,7 +584,7 @@ async function loadStats() {
             <div class="chart-title" style="margin-bottom:0">Tracking Status</div>
             <button class="btn btn-outline btn-sm" onclick="triggerRefreshTracking()" style="font-size:12px">&#x21BB; Refresh Tracking</button>
           </div>
-          <div style="font-size:12px;color:var(--muted);margin-bottom:10px">${checkedCount.toLocaleString()} of ${totalPkg.toLocaleString()} packages checked</div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:10px">${checkedCount.toLocaleString()} of ${totalPkg.toLocaleString()} packages have been checked</div>
           <div class="ts-grid">
             <div class="ts-card ts-delivered">
               <div class="ts-count">${(statusMap['Delivered'] || 0).toLocaleString()}</div>
@@ -582,11 +603,13 @@ async function loadStats() {
               <div class="ts-label">Exception</div>
             </div>
             <div class="ts-card ts-unknown">
-              <div class="ts-count">${((statusMap['Unknown'] || 0) + (unchecked > 0 ? unchecked : 0)).toLocaleString()}</div>
-              <div class="ts-label">Unknown</div>
+              <div class="ts-count">${(unchecked + (statusMap['Unknown'] || 0)).toLocaleString()}</div>
+              <div class="ts-label">Not Checked</div>
             </div>
           </div>
+          ${cfgHtml}
         </div>`;
+
       let tsWrap = document.getElementById('trackingStatusWrap');
       if (!tsWrap) {
         tsWrap = document.createElement('div');

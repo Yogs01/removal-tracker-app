@@ -142,10 +142,10 @@ function buildRecord(row) {
 }
 
 // ─── carrier tracking helpers ─────────────────────────────────────────────────
-// Node 25 has built-in fetch; use https module as fallback for older runtimes
+// Node 18+ has built-in fetch; use https module as fallback
 const https = require('https');
 
-function httpsGet(url, options = {}) {
+function httpsRequest(url, options = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const reqOpts = {
@@ -153,12 +153,17 @@ function httpsGet(url, options = {}) {
       path: u.pathname + u.search,
       method: options.method || 'GET',
       headers: options.headers || {},
-      timeout: 10000,
+      timeout: 12000,
     };
     const req = https.request(reqOpts, res => {
       let data = '';
       res.on('data', chunk => { data += chunk; });
-      res.on('end', () => resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, text: () => Promise.resolve(data), json: () => Promise.resolve(JSON.parse(data)) }));
+      res.on('end', () => resolve({
+        ok: res.statusCode >= 200 && res.statusCode < 300,
+        status: res.statusCode,
+        text: () => Promise.resolve(data),
+        json: () => Promise.resolve(JSON.parse(data))
+      }));
     });
     req.on('error', reject);
     req.on('timeout', () => { req.destroy(); reject(new Error('Request timed out')); });
@@ -167,55 +172,113 @@ function httpsGet(url, options = {}) {
   });
 }
 
-// fetchWithTimeout — uses native fetch (Node 18+) if available, else falls back to https module
-function fetchWithTimeout(url, options = {}, ms = 10000) {
+function fetchWithTimeout(url, options = {}, ms = 12000) {
   if (typeof fetch === 'function') {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), ms);
     return fetch(url, { ...options, signal: ctrl.signal }).finally(() => clearTimeout(timer));
   }
-  return httpsGet(url, options);
+  return httpsRequest(url, options);
 }
 
+// ─── UPS OAuth2 Token Cache ───────────────────────────────────────────────────
+// Set UPS_CLIENT_ID and UPS_CLIENT_SECRET in Railway env vars.
+// Register free at https://developer.ups.com → My Apps → Add App → Tracking API
+let upsTokenCache = { token: null, expires: 0 };
+
+async function getUPSToken() {
+  if (upsTokenCache.token && Date.now() < upsTokenCache.expires) {
+    return upsTokenCache.token;
+  }
+  const clientId     = process.env.UPS_CLIENT_ID     || '';
+  const clientSecret = process.env.UPS_CLIENT_SECRET || '';
+  if (!clientId || !clientSecret) return null;
+
+  const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+  try {
+    const res = await fetchWithTimeout('https://onlinetools.ups.com/security/v1/oauth/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Authorization': `Basic ${credentials}`,
+      },
+      body: 'grant_type=client_credentials',
+    }, 15000);
+    if (!res.ok) { console.error('[UPS] token fetch failed:', res.status); return null; }
+    const data = await res.json();
+    upsTokenCache.token   = data.access_token;
+    upsTokenCache.expires = Date.now() + (data.expires_in - 60) * 1000;
+    console.log('[UPS] token refreshed, expires in', data.expires_in, 's');
+    return upsTokenCache.token;
+  } catch (e) {
+    console.error('[UPS] token error:', e.message);
+    return null;
+  }
+}
+
+// UPS Developer API v1 — requires UPS_CLIENT_ID + UPS_CLIENT_SECRET env vars
+// Get free API access at https://developer.ups.com
 async function checkUPS(trackingNum) {
   try {
-    const url = `https://www.ups.com/track/api/Track/GetStatus?loc=en_US`;
-    const body = JSON.stringify({ TrackRequest: { InquiryNumber: trackingNum } });
+    const token = await getUPSToken();
+    if (!token) return null;
+
+    const url = `https://onlinetools.ups.com/api/track/v1/details/${encodeURIComponent(trackingNum)}`;
     const res = await fetchWithTimeout(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0' },
-      body
-    }, 10000);
-    if (!res.ok) return null;
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'transId': `removal-${Date.now()}`,
+        'transactionSrc': 'removaltracker',
+      },
+    }, 12000);
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.error(`[UPS] tracking error for ${trackingNum}: HTTP ${res.status}`, errText.slice(0, 200));
+      return null;
+    }
+
     const data = await res.json();
-    const pkg = data?.trackResponse?.shipment?.[0]?.package?.[0];
-    const act = pkg?.activity?.[0];
-    if (!act) return null;
+    const pkg  = data?.trackResponse?.shipment?.[0]?.package?.[0];
+    if (!pkg) return null;
+
+    const act  = pkg.activity?.[0];
+    if (!act)  return null;
+
     const type = act.status?.type;
     const status = type === 'D' ? 'Delivered'
                  : type === 'O' ? 'Out for Delivery'
                  : type === 'X' ? 'Exception'
                  : 'In Transit';
-    const loc = [act.location?.address?.city, act.location?.address?.stateProvince].filter(Boolean).join(', ');
+    const loc  = [act.location?.address?.city, act.location?.address?.stateProvince]
+                   .filter(Boolean).join(', ');
     return { status, description: act.status?.description || '', location: loc };
   } catch (e) {
+    console.error(`[UPS] check error for ${trackingNum}:`, e.message);
     return null;
   }
 }
 
-// USPS requires a free User ID from https://www.usps.com/business/web-tools-apis/
-// Set the USPS_USER_ID environment variable to enable USPS tracking.
-// If USPS_USER_ID is not set, USPS tracking is skipped.
+// USPS Web Tools API — requires free USPS_USER_ID from https://www.usps.com/business/web-tools-apis/
+// Set USPS_USER_ID in Railway env vars.
 async function checkUSPS(trackingNum) {
   try {
     const userId = process.env.USPS_USER_ID || '';
     if (!userId) return null;
     const xml = `<TrackFieldRequest USERID="${userId}"><TrackID ID="${trackingNum}"/></TrackFieldRequest>`;
     const url = `https://secure.shippingapis.com/ShippingAPI.dll?API=TrackV2&XML=${encodeURIComponent(xml)}`;
-    const res = await fetchWithTimeout(url, {}, 10000);
+    const res = await fetchWithTimeout(url, {}, 12000);
     if (!res.ok) return null;
     const text = await res.text();
-    const event = text.match(/<Event>(.*?)<\/Event>/)?.[1] || '';
+    // Check for USPS error response
+    if (text.includes('<Error>') || text.includes('<Description>')) {
+      const desc = text.match(/<Description>(.*?)<\/Description>/)?.[1] || '';
+      if (desc) console.error(`[USPS] error for ${trackingNum}:`, desc);
+      return null;
+    }
+    const event = text.match(/<Event>(.*?)<\/Event>/)?.[1]      || '';
     const city  = text.match(/<EventCity>(.*?)<\/EventCity>/)?.[1] || '';
     const state = text.match(/<EventState>(.*?)<\/EventState>/)?.[1] || '';
     const lower = event.toLowerCase();
@@ -225,25 +288,19 @@ async function checkUSPS(trackingNum) {
                  : 'In Transit';
     return { status, description: event, location: [city, state].filter(Boolean).join(', ') };
   } catch (e) {
+    console.error(`[USPS] check error for ${trackingNum}:`, e.message);
     return null;
   }
 }
 
+// Amazon TBA tracking — Amazon Logistics does not expose a public server-side API.
+// The track.amazon.com page requires JavaScript/session to render.
+// This function marks Amazon packages as "In Transit" (requires manual check or
+// Amazon SP-API credentials for automated status).
 async function checkAmazon(trackingNum) {
-  try {
-    const url = `https://track.amazon.com/api/tracker?trackingId=${trackingNum}`;
-    const res = await fetchWithTimeout(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
-    }, 10000);
-    if (!res.ok) return null;
-    const data = await res.json();
-    const status = data.status === 'DELIVERED' ? 'Delivered'
-                 : data.status === 'OUT_FOR_DELIVERY' ? 'Out for Delivery'
-                 : 'In Transit';
-    return { status, description: data.statusDescription || status, location: '' };
-  } catch (e) {
-    return null;
-  }
+  // Amazon TBA packages cannot be checked via public API without browser session.
+  // Return null so they stay at current status rather than being overwritten with bad data.
+  return null;
 }
 
 function updateOrderStatuses() {
@@ -293,20 +350,39 @@ async function refreshTracking(batchSize = 50) {
       location = excluded.location, last_checked = excluded.last_checked
   `);
 
-  let checked = 0, updated = 0;
+  // Log which carriers are configured
+  const hasUPS  = !!(process.env.UPS_CLIENT_ID && process.env.UPS_CLIENT_SECRET);
+  const hasUSPS = !!process.env.USPS_USER_ID;
+  console.log(`[tracking] config: UPS=${hasUPS ? '✓' : '✗ (need UPS_CLIENT_ID+UPS_CLIENT_SECRET)'} USPS=${hasUSPS ? '✓' : '✗ (need USPS_USER_ID)'} Amazon=✗ (no public API)`);
+  console.log(`[tracking] checking ${rows.length} packages...`);
+
+  let checked = 0, updated = 0, skipped = 0;
   for (const row of rows) {
     try {
       const carrier = normalizeCarrier(row.carrier, row.tracking_number);
       let result = null;
-      if (carrier === 'UPS')    result = await checkUPS(row.tracking_number);
-      else if (carrier === 'USPS')   result = await checkUSPS(row.tracking_number);
-      else if (carrier === 'Amazon') result = await checkAmazon(row.tracking_number);
+
+      if (carrier === 'UPS' && hasUPS) {
+        result = await checkUPS(row.tracking_number);
+      } else if (carrier === 'USPS' && hasUSPS) {
+        result = await checkUSPS(row.tracking_number);
+      } else if (carrier === 'Amazon') {
+        // Amazon TBA: no public API — skip (don't overwrite with Unknown)
+        skipped++;
+        continue;
+      } else if (!hasUPS && carrier === 'UPS') {
+        skipped++;
+        continue;
+      } else if (!hasUSPS && carrier === 'USPS') {
+        skipped++;
+        continue;
+      }
 
       const status = result?.status || 'Unknown';
       upsert.run(row.tracking_number, status, result?.description || '', result?.location || '');
       if (result) updated++;
       checked++;
-      await new Promise(r => setTimeout(r, 300)); // rate limit delay
+      await new Promise(r => setTimeout(r, 300)); // rate limit delay between requests
     } catch (e) {
       console.error(`tracking check failed for ${row.tracking_number}:`, e.message);
     }
@@ -314,8 +390,8 @@ async function refreshTracking(batchSize = 50) {
 
   // Update order statuses based on their tracking results
   updateOrderStatuses();
-  console.log(`[tracking] checked=${checked} updated=${updated}`);
-  return { checked, updated, remaining: rows.length };
+  console.log(`[tracking] done: checked=${checked} updated=${updated} skipped=${skipped}`);
+  return { checked, updated, skipped, remaining: rows.length };
 }
 
 // ─── in-memory jobs ───────────────────────────────────────────────────────────
@@ -581,6 +657,39 @@ app.get('/api/tracking', (req, res) => {
   res.json({ rows: result, total, page, pages: Math.ceil(total / limit) });
 });
 
+// ─── GET /api/tracking/refresh — manually trigger a tracking check ────────────
+app.get('/api/tracking/refresh', async (req, res) => {
+  const batch = parseInt(req.query.batch) || 100;
+  const hasUPS  = !!(process.env.UPS_CLIENT_ID && process.env.UPS_CLIENT_SECRET);
+  const hasUSPS = !!process.env.USPS_USER_ID;
+  const configured = [];
+  if (hasUPS)  configured.push('UPS');
+  if (hasUSPS) configured.push('USPS');
+  const msg = configured.length
+    ? `Checking up to ${batch} ${configured.join('+')} tracking numbers in background...`
+    : `No carrier credentials configured. Set UPS_CLIENT_ID+UPS_CLIENT_SECRET (UPS) or USPS_USER_ID (USPS) in Railway env vars.`;
+  res.json({ success: configured.length > 0, message: msg, configured });
+  if (configured.length > 0) {
+    refreshTracking(batch).catch(e => console.error('refresh error:', e.message));
+  }
+});
+
+// ─── GET /api/tracking/status-summary — counts by status ─────────────────────
+app.get('/api/tracking/status-summary', (req, res) => {
+  const summary = db.prepare(`
+    SELECT status, COUNT(*) as count
+    FROM tracking_status
+    GROUP BY status ORDER BY count DESC
+  `).all();
+  const lastChecked = db.prepare(`SELECT MAX(last_checked) as ts FROM tracking_status`).get()?.ts;
+  const totalTracking = db.prepare(`SELECT COUNT(DISTINCT tracking_number) as n FROM removal_shipments WHERE tracking_number != ''`).get().n;
+  const checkedCount  = db.prepare(`SELECT COUNT(*) as n FROM tracking_status`).get().n;
+  const hasUPS  = !!(process.env.UPS_CLIENT_ID && process.env.UPS_CLIENT_SECRET);
+  const hasUSPS = !!process.env.USPS_USER_ID;
+  res.json({ summary, lastChecked, totalTracking, checkedCount,
+    config: { ups: hasUPS, usps: hasUSPS, amazon: false } });
+});
+
 // ─── GET /api/tracking/:tn — items in one tracking number ────────────────────
 app.get('/api/tracking/:tn', (req, res) => {
   const tn = req.params.tn;
@@ -777,26 +886,6 @@ app.delete('/api/reset', (req, res) => {
   db.prepare('DELETE FROM removal_orders').run();
   db.prepare('DELETE FROM upload_log').run();
   res.json({ success: true });
-});
-
-// ─── GET /api/tracking/refresh — manually trigger a tracking check ────────────
-app.get('/api/tracking/refresh', async (req, res) => {
-  const batch = parseInt(req.query.batch) || 50;
-  res.json({ success: true, message: `Checking up to ${batch} tracking numbers in background...` });
-  refreshTracking(batch).catch(e => console.error('refresh error:', e.message));
-});
-
-// ─── GET /api/tracking/status-summary — counts by status ─────────────────────
-app.get('/api/tracking/status-summary', (req, res) => {
-  const summary = db.prepare(`
-    SELECT status, COUNT(*) as count
-    FROM tracking_status
-    GROUP BY status ORDER BY count DESC
-  `).all();
-  const lastChecked = db.prepare(`SELECT MAX(last_checked) as ts FROM tracking_status`).get()?.ts;
-  const totalTracking = db.prepare(`SELECT COUNT(DISTINCT tracking_number) as n FROM removal_shipments WHERE tracking_number != ''`).get().n;
-  const checkedCount = db.prepare(`SELECT COUNT(*) as n FROM tracking_status`).get().n;
-  res.json({ summary, lastChecked, totalTracking, checkedCount });
 });
 
 // ─── Auto-refresh tracking status every 4 hours ───────────────────────────────
