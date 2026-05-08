@@ -268,9 +268,13 @@ tr:hover td{background:var(--bg)}
       <div class="table-meta" id="addrMeta">—</div>
     </div>
     <div class="filter-bar">
-      <input type="text" id="addrSearch"   placeholder="Search address…"         oninput="debounce(()=>loadAddresses(),350)"/>
-      <input type="text" id="addrOrderId"  placeholder="Filter by Order ID…"     oninput="debounce(()=>loadAddresses(),350)" style="font-family:monospace"/>
-      <input type="text" id="addrFnsku"    placeholder="Filter by FNSKU…"        oninput="debounce(()=>loadAddresses(),350)" style="font-family:monospace"/>
+      <select id="addrSearch"  onchange="loadAddresses()" style="min-width:220px">
+        <option value="">All Addresses</option>
+      </select>
+      <select id="addrOrderId" onchange="loadAddresses()" style="font-family:monospace;min-width:200px">
+        <option value="">All Order IDs</option>
+      </select>
+      <input type="text" id="addrFnsku" placeholder="Filter by FNSKU…" oninput="debounce(()=>loadAddresses(),350)" style="font-family:monospace"/>
       <button class="btn btn-outline btn-sm" onclick="clearAddrFilters()">Clear</button>
       <button class="btn btn-primary btn-sm" onclick="exportAddressItems()">⬇ Export CSV</button>
     </div>
@@ -455,10 +459,32 @@ async function uploadFile(file, type) {
   }
 }
 // ── BY ADDRESS ────────────────────────────────────────────────────────────────
+async function populateAddrDropdowns() {
+  if (window._addrDropdownsLoaded) return;
+  window._addrDropdownsLoaded = true;
+  try {
+    const d = await fetch('/api/dropdown-options').then(r=>r.json());
+    const selAddr  = document.getElementById('addrSearch');
+    const selOrder = document.getElementById('addrOrderId');
+    d.addresses.forEach(addr => {
+      const o = document.createElement('option');
+      o.value = addr;
+      o.textContent = addr.split('\n')[0] || addr;
+      o.title = addr;
+      selAddr.appendChild(o);
+    });
+    d.orderIds.forEach(id => {
+      const o = document.createElement('option');
+      o.value = o.textContent = id;
+      selOrder.appendChild(o);
+    });
+  } catch(e) { console.error('addr dropdown load error:', e); }
+}
+
 function clearAddrFilters() {
-  document.getElementById('addrSearch').value  = '';
-  document.getElementById('addrOrderId').value = '';
-  document.getElementById('addrFnsku').value   = '';
+  document.getElementById('addrSearch').selectedIndex  = 0;
+  document.getElementById('addrOrderId').selectedIndex = 0;
+  document.getElementById('addrFnsku').value = '';
   loadAddresses();
 }
 
@@ -477,6 +503,7 @@ function exportAddressItems() {
 }
 
 async function loadAddresses() {
+  await populateAddrDropdowns();
   const search  = document.getElementById('addrSearch')?.value  || '';
   const orderId = document.getElementById('addrOrderId')?.value || '';
   const fnsku   = document.getElementById('addrFnsku')?.value   || '';
