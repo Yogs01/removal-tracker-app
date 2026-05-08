@@ -957,6 +957,57 @@ app.get('/api/address-items', (req, res) => {
   res.json(result);
 });
 
+// ─── GET /api/export/address-items — CSV download of all address+order+FNSKU ──
+app.get('/api/export/address-items', (req, res) => {
+  const search  = req.query.search   || '';
+  const orderId = req.query.order_id || '';
+  const fnsku   = req.query.fnsku    || '';
+
+  let where = `WHERE o.shipping_address != ''`;
+  const params = [];
+  if (search)  { where += ` AND (o.shipping_address LIKE ? OR s.order_id LIKE ?)`; params.push(`%${search}%`, `%${search}%`); }
+  if (orderId) { where += ` AND s.order_id LIKE ?`; params.push(`%${orderId}%`); }
+  if (fnsku)   { where += ` AND s.fnsku    LIKE ?`; params.push(`%${fnsku}%`); }
+
+  const rows = db.prepare(`
+    SELECT
+      o.shipping_address,
+      s.order_id,
+      s.fnsku,
+      s.sku,
+      s.tracking_number,
+      s.carrier,
+      s.shipped_quantity,
+      s.disposition,
+      s.shipment_date,
+      s.request_date
+    FROM removal_shipments s
+    JOIN removal_orders o ON s.order_id = o.order_id
+    ${where}
+    ORDER BY o.shipping_address, s.order_id, s.fnsku
+  `).all(...params);
+
+  // Build CSV
+  const csvEsc = v => {
+    const s = String(v ?? '').replace(/\r\n/g, ' ').replace(/\n/g, ' ');
+    return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const headers = ['Shipping Address','Order ID','FNSKU','SKU','Tracking Number','Carrier','Shipped Quantity','Disposition','Shipment Date','Request Date'];
+  const lines = [
+    headers.join(','),
+    ...rows.map(r => [
+      r.shipping_address, r.order_id, r.fnsku, r.sku,
+      r.tracking_number, r.carrier, r.shipped_quantity,
+      r.disposition, r.shipment_date, r.request_date
+    ].map(csvEsc).join(','))
+  ];
+
+  const filename = `address-shipments-${new Date().toISOString().slice(0,10)}.csv`;
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(lines.join('\r\n'));
+});
+
 // ─── GET /api/dropdown-options — lightweight lists for filter dropdowns ───────
 app.get('/api/dropdown-options', (req, res) => {
   const orderIds = db.prepare(`

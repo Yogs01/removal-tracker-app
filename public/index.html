@@ -272,6 +272,7 @@ tr:hover td{background:var(--bg)}
       <input type="text" id="addrOrderId"  placeholder="Filter by Order ID…"     oninput="debounce(()=>loadAddresses(),350)" style="font-family:monospace"/>
       <input type="text" id="addrFnsku"    placeholder="Filter by FNSKU…"        oninput="debounce(()=>loadAddresses(),350)" style="font-family:monospace"/>
       <button class="btn btn-outline btn-sm" onclick="clearAddrFilters()">Clear</button>
+      <button class="btn btn-primary btn-sm" onclick="exportAddressItems()">⬇ Export CSV</button>
     </div>
     <div id="addrTableWrap">
       <table><tbody><tr><td colspan="6" style="text-align:center;padding:32px"><span class="spinner"></span>Loading…</td></tr></tbody></table>
@@ -459,6 +460,20 @@ function clearAddrFilters() {
   document.getElementById('addrOrderId').value = '';
   document.getElementById('addrFnsku').value   = '';
   loadAddresses();
+}
+
+function exportAddressItems() {
+  const search  = document.getElementById('addrSearch')?.value  || '';
+  const orderId = document.getElementById('addrOrderId')?.value || '';
+  const fnsku   = document.getElementById('addrFnsku')?.value   || '';
+  const p = new URLSearchParams();
+  if (search)  p.set('search',   search);
+  if (orderId) p.set('order_id', orderId);
+  if (fnsku)   p.set('fnsku',    fnsku);
+  const a = document.createElement('a');
+  a.href = `/api/export/address-items?${p}`;
+  a.download = '';
+  a.click();
 }
 
 async function loadAddresses() {
